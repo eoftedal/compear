@@ -35,11 +35,11 @@ async function detectWebGPU() {
 }
 
 export const AVAILABLE_MODELS = [
+  'Xenova/bge-small-en-v1.5',
+  'onnx-community/Qwen3-Embedding-0.6B-ONNX',
   'Xenova/all-MiniLM-L6-v2',
   'Xenova/all-MiniLM-L12-v2',
-  'Xenova/bge-small-en-v1.5',
   'nomic-ai/nomic-embed-text-v1.5',
-  'onnx-community/Qwen3-Embedding-0.6B-ONNX',
 ] as const
 
 export type ModelName = (typeof AVAILABLE_MODELS)[number]
@@ -51,7 +51,7 @@ let isInitializing = false
 let initializationPromise: Promise<void> | null = null
 
 export async function initializeModel(
-  modelName: ModelName = 'Xenova/all-MiniLM-L6-v2',
+  modelName: ModelName = 'Xenova/bge-small-en-v1.5',
 ): Promise<void> {
   // Detect WebGPU first
   await detectWebGPU()

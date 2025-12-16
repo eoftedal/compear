@@ -13,7 +13,7 @@ import { calculatePairwiseSimilarities, type SimilarityPair } from '@/utils/simi
 
 export const useComparisonStore = defineStore('comparison', () => {
   // Model state
-  const selectedModel = ref<ModelName>('Xenova/all-MiniLM-L6-v2')
+  const selectedModel = ref<ModelName>('Xenova/bge-small-en-v1.5')
   const isModelLoading = ref(false)
   const isModelReady = ref(false)
   const modelError = ref<string | null>(null)
