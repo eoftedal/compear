@@ -3,24 +3,35 @@ import { pipeline, env, type PipelineType } from '@huggingface/transformers'
 // Configure to use local models (cached in browser)
 env.allowLocalModels = false
 
-// Enable WebGPU if available, with fallback to WASM
-if (env.backends?.onnx?.wasm) {
-  env.backends.onnx.wasm.numThreads = 1
-}
-const device = { device: 'cpu' }
-if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
-  try {
-    if (env.backends?.onnx) {
-      device.device = 'gpu'
-      // @ts-expect-error - WebGPU types may not be fully defined
-      env.backends.onnx.webgpu = device
-      console.log('[Embeddings] WebGPU acceleration enabled')
+// Detect WebGPU availability
+let deviceConfig: { device?: 'webgpu' } = {}
+let deviceDetected = false
+
+async function detectWebGPU() {
+  if (deviceDetected) return
+  deviceDetected = true
+
+  if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+    try {
+      // Attempt to request adapter to verify WebGPU is available
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const adapter = await (navigator as any).gpu?.requestAdapter()
+      if (adapter) {
+        deviceConfig = { device: 'webgpu' }
+        console.log('[Embeddings] WebGPU acceleration enabled')
+        return
+      }
+    } catch (error) {
+      console.warn('[Embeddings] WebGPU not available, falling back to WASM:', error)
     }
-  } catch (error) {
-    console.warn('[Embeddings] WebGPU not available, falling back to WASM:', error)
+  } else {
+    console.log('[Embeddings] WebGPU not supported by browser, using WASM backend')
   }
-} else {
-  console.log('[Embeddings] WebGPU not supported by browser, using WASM backend')
+
+  // Fallback to WASM
+  if (env.backends?.onnx?.wasm) {
+    env.backends.onnx.wasm.numThreads = 1
+  }
 }
 
 export const AVAILABLE_MODELS = [
@@ -42,6 +53,9 @@ let initializationPromise: Promise<void> | null = null
 export async function initializeModel(
   modelName: ModelName = 'Xenova/all-MiniLM-L6-v2',
 ): Promise<void> {
+  // Detect WebGPU first
+  await detectWebGPU()
+
   // If same model is already loaded, return
   if (embeddingPipeline && currentModel === modelName) {
     return
@@ -60,8 +74,13 @@ export async function initializeModel(
   isInitializing = true
   initializationPromise = (async () => {
     try {
-      embeddingPipeline = await pipeline('feature-extraction' as PipelineType, modelName)
+      embeddingPipeline = await pipeline(
+        'feature-extraction' as PipelineType,
+        modelName,
+        deviceConfig.device ? { device: deviceConfig.device } : {},
+      )
       currentModel = modelName
+      console.log(`[Embeddings] Model loaded: ${modelName} on ${deviceConfig.device || 'cpu'}`)
     } finally {
       isInitializing = false
     }
@@ -82,7 +101,7 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   const output = await embeddingPipeline(text, {
     pooling: poolingStrategy,
     normalize: true,
-    ...device,
+    ...deviceConfig,
   })
 
   // Convert tensor to array - for feature extraction, output is a Tensor
