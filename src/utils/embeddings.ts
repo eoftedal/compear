@@ -7,6 +7,7 @@ export const AVAILABLE_MODELS = [
   'Xenova/all-MiniLM-L6-v2',
   'Xenova/all-MiniLM-L12-v2',
   'Xenova/bge-small-en-v1.5',
+  'nomic-ai/nomic-embed-text-v1.5',
 ] as const
 
 export type ModelName = (typeof AVAILABLE_MODELS)[number]
