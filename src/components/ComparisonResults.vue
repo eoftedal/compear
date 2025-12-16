@@ -12,8 +12,8 @@ const tableHeaders = computed(() => {
   }
   const headers = ['Similarity']
   for (const col of store.displayColumns) {
-    headers.push(`Row A: ${col}`)
-    headers.push(`Row B: ${col}`)
+    headers.push(`A: ${col}`)
+    headers.push(`B: ${col}`)
   }
   return headers
 })
