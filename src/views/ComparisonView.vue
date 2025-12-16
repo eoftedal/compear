@@ -10,7 +10,7 @@ const store = useComparisonStore()
   <div class="comparison-view">
     <header class="header">
       <h1>Compear 🍐</h1>
-      <p class="subtitle">Compare CSV rows using AI-powered embeddings</p>
+      <p class="subtitle">Compare CSV rows using AI-powered embeddings.</p>
 
       <div class="model-controls">
         <label class="model-selector">
@@ -120,7 +120,6 @@ const store = useComparisonStore()
   border-radius: 24px;
   font-size: 0.9rem;
   font-weight: 500;
-  margin-top: 1rem;
 }
 
 .model-status.loading {

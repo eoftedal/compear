@@ -4,6 +4,7 @@ import { useComparisonStore } from '@/stores/comparison'
 
 const store = useComparisonStore()
 const customRowLimit = ref(50)
+const expandedRows = ref<Set<number>>(new Set())
 
 const tableHeaders = computed(() => {
   if (store.displayColumns.length === 0) {
@@ -15,6 +16,10 @@ const tableHeaders = computed(() => {
     headers.push(`Row B: ${col}`)
   }
   return headers
+})
+
+const allFields = computed(() => {
+  return store.csvHeaders
 })
 
 function updateRowLimit() {
@@ -32,6 +37,18 @@ function getScoreClass(score: number): string {
   if (score >= 0.9) return 'score-high'
   if (score >= 0.7) return 'score-medium'
   return 'score-low'
+}
+
+function toggleRow(index: number) {
+  if (expandedRows.value.has(index)) {
+    expandedRows.value.delete(index)
+  } else {
+    expandedRows.value.add(index)
+  }
+}
+
+function isRowExpanded(index: number): boolean {
+  return expandedRows.value.has(index)
 }
 </script>
 
@@ -74,24 +91,60 @@ function getScoreClass(score: number): string {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(result, index) in store.displayedResults" :key="index">
-              <td class="row-number">{{ index + 1 }}</td>
-
-              <!-- Similarity score -->
-              <td :class="['score-cell', getScoreClass(result.score)]">
-                {{ formatScore(result.score) }}
-              </td>
-
-              <!-- Columns pairwise -->
-              <template v-for="col in store.displayColumns" :key="col">
-                <td class="data-cell">
-                  {{ store.csvRows[result.rowIndexA]?.[col] || '-' }}
+            <template v-for="(result, index) in store.displayedResults" :key="index">
+              <tr
+                :class="['result-row', { expanded: isRowExpanded(index) }]"
+                @click="toggleRow(index)"
+              >
+                <td class="row-number">
+                  {{ index + 1 }}
                 </td>
-                <td class="data-cell">
-                  {{ store.csvRows[result.rowIndexB]?.[col] || '-' }}
+
+                <!-- Similarity score -->
+                <td :class="['score-cell', getScoreClass(result.score)]">
+                  {{ formatScore(result.score) }}
                 </td>
-              </template>
-            </tr>
+
+                <!-- Columns pairwise -->
+                <template v-for="col in store.displayColumns" :key="col">
+                  <td class="data-cell">
+                    {{ store.csvRows[result.rowIndexA]?.[col] || '-' }}
+                  </td>
+                  <td class="data-cell">
+                    {{ store.csvRows[result.rowIndexB]?.[col] || '-' }}
+                  </td>
+                </template>
+              </tr>
+
+              <!-- Expanded row details -->
+              <tr v-if="isRowExpanded(index)" class="expanded-details">
+                <td :colspan="tableHeaders.length + 1">
+                  <div class="details-container">
+                    <h4>All Fields Comparison</h4>
+                    <table class="details-table">
+                      <thead>
+                        <tr>
+                          <th>Field Name</th>
+                          <th>Row A</th>
+                          <th>Row B</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="field in allFields" :key="field">
+                          <td class="field-name">{{ field }}</td>
+                          <td class="field-value">
+                            {{ store.csvRows[result.rowIndexA]?.[field] || '-' }}
+                          </td>
+                          <td class="field-value">
+                            {{ store.csvRows[result.rowIndexB]?.[field] || '-' }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -213,15 +266,32 @@ function getScoreClass(score: number): string {
   border-bottom: 1px solid #f0f0f0;
 }
 
-.results-table tbody tr:hover {
+.result-row {
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.result-row:hover {
   background: #f9f9f9;
+}
+
+.result-row.expanded {
+  background: #f0f7ff;
 }
 
 .row-number {
   text-align: center;
   font-weight: 600;
   color: #666;
-  width: 60px;
+  width: 80px;
+}
+
+.expand-icon {
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.8rem;
+  color: #666;
+  transition: transform 0.2s;
 }
 
 .data-cell {
@@ -250,6 +320,72 @@ function getScoreClass(score: number): string {
 .score-low {
   color: #1976d2;
   background: #e3f2fd;
+}
+
+.expanded-details {
+  background: #fafafa;
+}
+
+.expanded-details td {
+  padding: 0;
+}
+
+.details-container {
+  padding: 1.5rem;
+}
+
+.details-container h4 {
+  margin: 0 0 1rem 0;
+  color: #333;
+  font-size: 1rem;
+}
+
+.details-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.details-table thead {
+  background: #f5f5f5;
+}
+
+.details-table th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 2px solid #e0e0e0;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  color: #666;
+}
+
+.details-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 0.9rem;
+}
+
+.details-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.field-name {
+  font-weight: 600;
+  color: #444;
+  width: 25%;
+}
+
+.field-value {
+  color: #333;
+  word-break: break-word;
+}
+
+.details-table tbody tr:hover {
+  background: #f9f9f9;
 }
 
 @media (max-width: 768px) {

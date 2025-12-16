@@ -47,6 +47,7 @@ function toggleDisplayColumn(column: string) {
 
 async function handleCompare() {
   error.value = null
+  store.isComparing = true
   try {
     // Allow UI to update before starting heavy computation
     await nextTick()
@@ -60,7 +61,8 @@ async function handleCompare() {
 <template>
   <div class="csv-uploader">
     <div class="upload-section">
-      <h2>Upload CSV</h2>
+      <h2>Load CSV</h2>
+      <p class="subtitle">Everything is done in your browser. Nothing is uploaded to a backend.</p>
       <input
         ref="fileInput"
         type="file"
@@ -172,6 +174,10 @@ async function handleCompare() {
 .selection-group h3 {
   margin-bottom: 0.5rem;
   font-size: 1.2rem;
+}
+
+.subtitle {
+  margin: 0em 0em 0.5em 0em;
 }
 
 .help-text {
