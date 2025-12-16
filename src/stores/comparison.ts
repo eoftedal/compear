@@ -154,7 +154,7 @@ export const useComparisonStore = defineStore('comparison', () => {
 
       // Calculate pairwise similarities (70-100%)
       comparisonPhase.value = 'similarity'
-      similarityResults.value = calculatePairwiseSimilarities(
+      similarityResults.value = await calculatePairwiseSimilarities(
         embeddings.value,
         true,
         (current, total) => {

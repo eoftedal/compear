@@ -28,7 +28,8 @@ export interface SimilarityPair {
   score: number
 }
 
-export function calculatePairwiseSimilarities(
+// CPU fallback implementation
+function calculatePairwiseSimilaritiesCPU(
   embeddings: number[][],
   excludeSelfComparison = true,
   onProgress?: (current: number, total: number) => void,
@@ -65,4 +66,27 @@ export function calculatePairwiseSimilarities(
 
   // Sort by score in descending order
   return results.sort((a, b) => b.score - a.score)
+}
+
+export async function calculatePairwiseSimilarities(
+  embeddings: number[][],
+  excludeSelfComparison = true,
+  onProgress?: (current: number, total: number) => void,
+): Promise<SimilarityPair[]> {
+  // Try WebGPU first for better performance
+  try {
+    const { calculateSimilaritiesOnGPU, initializeWebGPU } = await import('./webgpuSimilarity')
+    const initialized = await initializeWebGPU()
+
+    if (initialized) {
+      console.log('[Similarity] Using WebGPU acceleration')
+      return await calculateSimilaritiesOnGPU(embeddings, onProgress)
+    }
+  } catch (error) {
+    console.log('[Similarity] WebGPU not available, falling back to CPU:', error)
+  }
+
+  // Fallback to CPU
+  console.log('[Similarity] Using CPU calculation')
+  return calculatePairwiseSimilaritiesCPU(embeddings, excludeSelfComparison, onProgress)
 }
