@@ -308,8 +308,8 @@ function isRowExpanded(index: number): boolean {
 }
 
 .score-high {
-  color: #2e7d32;
-  background: #e8f5e9;
+  color: #c62828;
+  background: #ffebee;
 }
 
 .score-medium {
