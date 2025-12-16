@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { CsvRow } from '@/utils/csvParser'
 import { parseCSV } from '@/utils/csvParser'
+import { parseXlsx } from '@/utils/xlsxParser'
 import {
   initializeModel,
   generateEmbeddings,
@@ -17,10 +18,11 @@ export const useComparisonStore = defineStore('comparison', () => {
   const isModelReady = ref(false)
   const modelError = ref<string | null>(null)
 
-  // CSV data
+  // File data
   const csvHeaders = ref<string[]>([])
   const csvRows = ref<CsvRow[]>([])
   const fileName = ref<string | null>(null)
+  const sheetName = ref<string | null>(null)
 
   // Column selections
   const comparisonColumns = ref<string[]>([])
@@ -76,10 +78,24 @@ export const useComparisonStore = defineStore('comparison', () => {
     await loadModel()
   }
 
-  // Load CSV file
-  async function loadCSV(file: File) {
+  // Load file (CSV or XLSX)
+  async function loadFile(file: File, fileType: 'csv' | 'xlsx', selectedSheet?: string) {
     try {
-      const parsed = await parseCSV(file)
+      let parsed
+
+      if (fileType === 'csv') {
+        parsed = await parseCSV(file)
+        sheetName.value = null
+      } else if (fileType === 'xlsx') {
+        if (!selectedSheet) {
+          throw new Error('Sheet name is required for XLSX files')
+        }
+        parsed = await parseXlsx(file, selectedSheet)
+        sheetName.value = selectedSheet
+      } else {
+        throw new Error('Unsupported file type')
+      }
+
       csvHeaders.value = parsed.headers
       csvRows.value = parsed.rows
       fileName.value = file.name
@@ -90,8 +106,13 @@ export const useComparisonStore = defineStore('comparison', () => {
       embeddings.value = []
       similarityResults.value = []
     } catch (error) {
-      throw new Error(error instanceof Error ? error.message : 'Failed to parse CSV')
+      throw new Error(error instanceof Error ? error.message : 'Failed to parse file')
     }
+  }
+
+  // Legacy function for backward compatibility
+  async function loadCSV(file: File) {
+    return loadFile(file, 'csv')
   }
 
   // Set comparison columns
@@ -139,6 +160,7 @@ export const useComparisonStore = defineStore('comparison', () => {
     csvHeaders.value = []
     csvRows.value = []
     fileName.value = null
+    sheetName.value = null
     comparisonColumns.value = []
     displayColumns.value = []
     embeddings.value = []
@@ -157,6 +179,7 @@ export const useComparisonStore = defineStore('comparison', () => {
     csvHeaders,
     csvRows,
     fileName,
+    sheetName,
     comparisonColumns,
     displayColumns,
     embeddings,
@@ -175,6 +198,7 @@ export const useComparisonStore = defineStore('comparison', () => {
     // Actions
     loadModel,
     changeModel,
+    loadFile,
     loadCSV,
     setComparisonColumns,
     setDisplayColumns,

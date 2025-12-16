@@ -1,13 +1,41 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, watch } from 'vue'
 import { useComparisonStore } from '@/stores/comparison'
+import { readWorkbook } from '@/utils/xlsxParser'
 
 const store = useComparisonStore()
 const fileInput = ref<HTMLInputElement | null>(null)
 const error = ref<string | null>(null)
+const currentFile = ref<File | null>(null)
+const availableSheets = ref<string[]>([])
+const selectedSheet = ref<string>('')
+const sheetError = ref<string | null>(null)
+
+// Watch for sheet selection changes and reload data
+watch(selectedSheet, async (newSheet, oldSheet) => {
+  if (newSheet && newSheet !== oldSheet && currentFile.value) {
+    sheetError.value = null
+    try {
+      const fileType = getFileType(currentFile.value)
+      if (fileType === 'xlsx') {
+        await store.loadFile(currentFile.value, fileType, newSheet)
+      }
+    } catch (err) {
+      sheetError.value = err instanceof Error ? err.message : 'Failed to load sheet'
+    }
+  }
+})
+
+function getFileType(file: File): 'csv' | 'xlsx' {
+  const name = file.name.toLowerCase()
+  if (name.endsWith('.csv')) return 'csv'
+  if (name.endsWith('.xlsx')) return 'xlsx'
+  throw new Error('Unsupported file type')
+}
 
 async function handleFileSelect(event: Event) {
   error.value = null
+  sheetError.value = null
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
 
@@ -15,15 +43,37 @@ async function handleFileSelect(event: Event) {
     return
   }
 
-  if (!file.name.endsWith('.csv')) {
-    error.value = 'Please select a CSV file'
+  const name = file.name.toLowerCase()
+  if (!name.endsWith('.csv') && !name.endsWith('.xlsx')) {
+    error.value = 'Please select a CSV or XLSX file'
     return
   }
 
+  currentFile.value = file
+  const fileType = getFileType(file)
+
   try {
-    await store.loadCSV(file)
+    if (fileType === 'xlsx') {
+      // Read workbook to get sheet names
+      const workbookInfo = await readWorkbook(file)
+      availableSheets.value = workbookInfo.sheetNames
+      selectedSheet.value = workbookInfo.sheetNames[0] || ''
+
+      // Load the first sheet by default
+      if (selectedSheet.value) {
+        await store.loadFile(file, fileType, selectedSheet.value)
+      }
+    } else {
+      // CSV file - no sheet selection needed
+      availableSheets.value = []
+      selectedSheet.value = ''
+      await store.loadFile(file, fileType)
+    }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to load CSV'
+    error.value = err instanceof Error ? err.message : 'Failed to load file'
+    currentFile.value = null
+    availableSheets.value = []
+    selectedSheet.value = ''
   }
 }
 
@@ -61,12 +111,12 @@ async function handleCompare() {
 <template>
   <div class="csv-uploader">
     <div class="upload-section">
-      <h2>Load CSV</h2>
+      <h2>Load File</h2>
       <p class="subtitle">Everything is done in your browser. Nothing is uploaded to a backend.</p>
       <input
         ref="fileInput"
         type="file"
-        accept=".csv"
+        accept=".csv,.xlsx"
         @change="handleFileSelect"
         class="file-input"
       />
@@ -74,6 +124,17 @@ async function handleCompare() {
       <p v-if="store.hasData" class="data-info">
         {{ store.csvRows.length }} rows, {{ store.csvHeaders.length }} columns
       </p>
+    </div>
+
+    <!-- Sheet selector for XLSX files -->
+    <div v-if="availableSheets.length > 0" class="sheet-selection">
+      <label for="sheet-select" class="sheet-label">Select Sheet:</label>
+      <select id="sheet-select" v-model="selectedSheet" class="sheet-select">
+        <option v-for="sheet in availableSheets" :key="sheet" :value="sheet">
+          {{ sheet }}
+        </option>
+      </select>
+      <p v-if="sheetError" class="sheet-error">{{ sheetError }}</p>
     </div>
 
     <div v-if="store.hasData" class="column-selection">
@@ -161,6 +222,42 @@ async function handleCompare() {
 
 .data-info {
   color: #666;
+  font-size: 0.9rem;
+}
+
+.sheet-selection {
+  margin-bottom: 2rem;
+  padding: 1rem;
+  background: #f5f5f5;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+}
+
+.sheet-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.sheet-select {
+  width: 100%;
+  padding: 0.5rem;
+  font-size: 1rem;
+  border: 2px solid #ccc;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+}
+
+.sheet-select:focus {
+  outline: none;
+  border-color: #42b883;
+}
+
+.sheet-error {
+  color: #d32f2f;
+  margin-top: 0.5rem;
   font-size: 0.9rem;
 }
 

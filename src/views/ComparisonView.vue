@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useComparisonStore } from '@/stores/comparison'
-import CsvUploader from '@/components/CsvUploader.vue'
+import FileUploader from '@/components/FileUploader.vue'
 import ComparisonResults from '@/components/ComparisonResults.vue'
 
 const store = useComparisonStore()
@@ -10,7 +10,7 @@ const store = useComparisonStore()
   <div class="comparison-view">
     <header class="header">
       <h1>Compear 🍐</h1>
-      <p class="subtitle">Compare CSV rows using AI-powered embeddings.</p>
+      <p class="subtitle">Compare CSV/XLSX rows using AI-powered embeddings.</p>
 
       <div class="model-controls">
         <label class="model-selector">
@@ -43,7 +43,7 @@ const store = useComparisonStore()
     </header>
 
     <main class="main-content">
-      <CsvUploader />
+      <FileUploader />
       <ComparisonResults />
     </main>
   </div>

@@ -60,7 +60,7 @@ function isRowExpanded(index: number): boolean {
     </div>
 
     <div v-else-if="store.similarityResults.length === 0" class="no-results">
-      <p>No comparison results yet. Upload a CSV and run comparison.</p>
+      <p>No comparison results yet. Upload a CSV/XLSX and run comparison.</p>
     </div>
 
     <div v-else class="results-container">
