@@ -3,6 +3,20 @@ import { pipeline, env, type PipelineType } from '@xenova/transformers'
 // Configure to use local models (cached in browser)
 env.allowLocalModels = false
 
+// Enable WebGPU if available, with fallback to WASM
+env.backends.onnx.wasm.numThreads = 1
+if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+  try {
+    // @ts-expect-error - WebGPU types may not be fully defined
+    env.backends.onnx.webgpu = { device: 'gpu' }
+    console.log('[Embeddings] WebGPU acceleration enabled')
+  } catch (error) {
+    console.warn('[Embeddings] WebGPU not available, falling back to WASM:', error)
+  }
+} else {
+  console.log('[Embeddings] WebGPU not supported by browser, using WASM backend')
+}
+
 export const AVAILABLE_MODELS = [
   'Xenova/all-MiniLM-L6-v2',
   'Xenova/all-MiniLM-L12-v2',
