@@ -1,15 +1,21 @@
-import { pipeline, env, type PipelineType } from '@xenova/transformers'
+import { pipeline, env, type PipelineType } from '@huggingface/transformers'
 
 // Configure to use local models (cached in browser)
 env.allowLocalModels = false
 
 // Enable WebGPU if available, with fallback to WASM
-env.backends.onnx.wasm.numThreads = 1
+if (env.backends?.onnx?.wasm) {
+  env.backends.onnx.wasm.numThreads = 1
+}
+const device = { device: 'cpu' }
 if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
   try {
-    // @ts-expect-error - WebGPU types may not be fully defined
-    env.backends.onnx.webgpu = { device: 'gpu' }
-    console.log('[Embeddings] WebGPU acceleration enabled')
+    if (env.backends?.onnx) {
+      device.device = 'gpu'
+      // @ts-expect-error - WebGPU types may not be fully defined
+      env.backends.onnx.webgpu = device
+      console.log('[Embeddings] WebGPU acceleration enabled')
+    }
   } catch (error) {
     console.warn('[Embeddings] WebGPU not available, falling back to WASM:', error)
   }
@@ -22,11 +28,13 @@ export const AVAILABLE_MODELS = [
   'Xenova/all-MiniLM-L12-v2',
   'Xenova/bge-small-en-v1.5',
   'nomic-ai/nomic-embed-text-v1.5',
+  'onnx-community/Qwen3-Embedding-0.6B-ONNX',
 ] as const
 
 export type ModelName = (typeof AVAILABLE_MODELS)[number]
 
-let embeddingPipeline: Awaited<ReturnType<typeof pipeline>> | null = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let embeddingPipeline: any | null = null
 let currentModel: ModelName | null = null
 let isInitializing = false
 let initializationPromise: Promise<void> | null = null
@@ -67,8 +75,15 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     throw new Error('Model not initialized. Call initializeModel() first.')
   }
 
-  // @ts-expect-error - Transformers.js type definitions have complex union types that cause issues
-  const output = await embeddingPipeline(text, { pooling: 'mean', normalize: true })
+  // Qwen3 models use last_token pooling, others use mean pooling
+  const poolingStrategy =
+    currentModel === 'onnx-community/Qwen3-Embedding-0.6B-ONNX' ? 'last_token' : 'mean'
+
+  const output = await embeddingPipeline(text, {
+    pooling: poolingStrategy,
+    normalize: true,
+    ...device,
+  })
 
   // Convert tensor to array - for feature extraction, output is a Tensor
   const tensor = output as { data: Float32Array }

@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@types/papaparse": "^5.5.2",
-    "@xenova/transformers": "^2.17.2",
+    "@huggingface/transformers": "^3.8.1",
     "papaparse": "^5.5.3",
     "pinia": "^3.0.4",
     "vue": "^3.5.25",
