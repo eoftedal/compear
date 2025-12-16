@@ -55,8 +55,19 @@ function isRowExpanded(index: number): boolean {
 <template>
   <div class="comparison-results">
     <div v-if="store.isComparing" class="loading-state">
-      <div class="loading-spinner"></div>
-      <p class="loading-text">Generating embeddings and calculating similarities...</p>
+      <div class="progress-container">
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: store.comparisonProgress + '%' }"></div>
+        </div>
+        <p class="loading-text">
+          <template v-if="store.comparisonPhase === 'embeddings'">
+            Generating embeddings... {{ store.comparisonProgress }}%
+          </template>
+          <template v-else-if="store.comparisonPhase === 'similarity'">
+            Calculating similarities... {{ store.comparisonProgress }}%
+          </template>
+        </p>
+      </div>
     </div>
 
     <div v-else-if="store.similarityResults.length === 0" class="no-results">
@@ -171,20 +182,27 @@ function isRowExpanded(index: number): boolean {
   padding: 4rem 2rem;
 }
 
-.loading-spinner {
-  width: 50px;
-  height: 50px;
-  border: 4px solid #f0f0f0;
-  border-top-color: #42b883;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin: 0 auto 1.5rem;
+.progress-container {
+  max-width: 500px;
+  margin: 0 auto;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+.progress-bar {
+  width: 100%;
+  height: 24px;
+  background: #f0f0f0;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 1.5rem;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #42b883 0%, #35495e 100%);
+  transition: width 0.3s ease;
+  border-radius: 12px;
+  box-shadow: 0 2px 4px rgba(66, 184, 131, 0.3);
 }
 
 .loading-text {

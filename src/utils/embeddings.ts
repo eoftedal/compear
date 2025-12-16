@@ -109,12 +109,23 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   return Array.from(tensor.data)
 }
 
-export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
+export async function generateEmbeddings(
+  texts: string[],
+  onProgress?: (current: number, total: number) => void,
+): Promise<number[][]> {
   const embeddings: number[][] = []
+  const total = texts.length
 
-  for (const text of texts) {
+  for (let i = 0; i < texts.length; i++) {
+    const text = texts[i]
+    if (!text) continue
+    
     const embedding = await generateEmbedding(text)
     embeddings.push(embedding)
+
+    if (onProgress) {
+      onProgress(i + 1, total)
+    }
   }
 
   return embeddings

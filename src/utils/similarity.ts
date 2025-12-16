@@ -31,8 +31,12 @@ export interface SimilarityPair {
 export function calculatePairwiseSimilarities(
   embeddings: number[][],
   excludeSelfComparison = true,
+  onProgress?: (current: number, total: number) => void,
 ): SimilarityPair[] {
   const results: SimilarityPair[] = []
+  const n = embeddings.length
+  const totalPairs = (n * (n - 1)) / 2
+  let pairsProcessed = 0
 
   for (let i = 0; i < embeddings.length; i++) {
     for (let j = i + 1; j < embeddings.length; j++) {
@@ -47,7 +51,16 @@ export function calculatePairwiseSimilarities(
         rowIndexB: j,
         score,
       })
+
+      pairsProcessed++
+      if (onProgress && pairsProcessed % 100 === 0) {
+        onProgress(pairsProcessed, totalPairs)
+      }
     }
+  }
+
+  if (onProgress) {
+    onProgress(totalPairs, totalPairs)
   }
 
   // Sort by score in descending order

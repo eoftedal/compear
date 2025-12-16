@@ -32,6 +32,8 @@ export const useComparisonStore = defineStore('comparison', () => {
   const embeddings = ref<number[][]>([])
   const similarityResults = ref<SimilarityPair[]>([])
   const isComparing = ref(false)
+  const comparisonProgress = ref(0)
+  const comparisonPhase = ref<'embeddings' | 'similarity' | ''>('')
 
   // Display settings
   const maxDisplayRows = ref(50)
@@ -136,6 +138,8 @@ export const useComparisonStore = defineStore('comparison', () => {
     }
 
     isComparing.value = true
+    comparisonProgress.value = 0
+    comparisonPhase.value = 'embeddings'
 
     try {
       // Generate text from selected columns for each row
@@ -143,15 +147,27 @@ export const useComparisonStore = defineStore('comparison', () => {
         return comparisonColumns.value.map((col) => row[col] || '').join(' ')
       })
 
-      // Generate embeddings
-      embeddings.value = await generateEmbeddings(texts)
+      // Generate embeddings with progress tracking (0-70%)
+      embeddings.value = await generateEmbeddings(texts, (current, total) => {
+        comparisonProgress.value = Math.round((current / total) * 70)
+      })
 
-      // Calculate pairwise similarities (excluding self-comparison)
-      similarityResults.value = calculatePairwiseSimilarities(embeddings.value, true)
+      // Calculate pairwise similarities (70-100%)
+      comparisonPhase.value = 'similarity'
+      similarityResults.value = calculatePairwiseSimilarities(
+        embeddings.value,
+        true,
+        (current, total) => {
+          const similarityProgress = (current / total) * 30
+          comparisonProgress.value = Math.round(70 + similarityProgress)
+        },
+      )
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : 'Comparison failed')
     } finally {
       isComparing.value = false
+      comparisonProgress.value = 0
+      comparisonPhase.value = ''
     }
   }
 
@@ -185,6 +201,8 @@ export const useComparisonStore = defineStore('comparison', () => {
     embeddings,
     similarityResults,
     isComparing,
+    comparisonProgress,
+    comparisonPhase,
     maxDisplayRows,
 
     // Constants
