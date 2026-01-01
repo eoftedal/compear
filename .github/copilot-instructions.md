@@ -17,6 +17,7 @@ Browser-based CSV/XLSX comparison tool using semantic similarity. Upload files, 
 
 - **Pinia Store** ([src/stores/comparison.ts](../src/stores/comparison.ts)): Central state for model, data, embeddings, and results
 - **Embeddings** ([src/utils/embeddings.ts](../src/utils/embeddings.ts)): Xenova/transformers.js pipeline with model switching support
+- **WebGPU Acceleration** ([src/utils/webgpuSimilarity.ts](../src/utils/webgpuSimilarity.ts)): GPU-accelerated similarity calculations and K-means clustering
 - **File Parsers**: CSV via papaparse, XLSX via xlsx library with multi-sheet support
 - **Components**: FileUploader handles upload/column selection, ComparisonResults displays similarity pairs
 
@@ -88,10 +89,30 @@ npm run type-check   # Vue TSC type checking
 
 ## External Dependencies
 
-- **@xenova/transformers**: ML models run in-browser via WASM
+- **@xenova/transformers**: ML models run in-browser via WASM/WebGPU
 - **papaparse**: CSV parsing with header detection
 - **xlsx**: Excel file reading with multi-sheet support
+- **WebGPU**: GPU acceleration for embeddings, similarity calculations, and clustering (automatic fallback to CPU)
 - Vite config sets `base: '/compear/'` for GitHub Pages deployment
+
+## GPU Acceleration
+
+### WebGPU Support
+
+The app automatically detects and uses WebGPU when available:
+
+- **Embedding generation**: Accelerated via transformers.js WebGPU backend
+- **Similarity calculations**: Custom compute shaders for pairwise comparisons
+- **K-means clustering**: GPU-accelerated centroid assignment and similarity calculations
+- **Fallback**: Automatically falls back to CPU (WASM) if WebGPU unavailable
+
+### WebGPU Implementation
+
+- [src/utils/webgpuSimilarity.ts](../src/utils/webgpuSimilarity.ts) contains compute shaders
+- **K-means clustering**: GPU offloads point-to-centroid similarity (N × k calculations per iteration)
+- **Hierarchical clustering**: GPU computes all pairwise cluster similarities per iteration
+- Centroid/cluster updates remain on CPU for simplicity
+- Topic modeling store automatically uses GPU clustering when available for both methods
 
 ## Common Tasks
 

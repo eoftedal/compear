@@ -1,10 +1,26 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, shallowRef } from 'vue'
 import { useComparisonStore } from '@/stores/comparison'
 
 const store = useComparisonStore()
 const customRowLimit = ref(50)
 const expandedRows = ref<Set<number>>(new Set())
+const searchInput = ref('')
+const searchText = ref('')
+const isFiltering = ref(false)
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+// Debounce search input to avoid blocking UI
+watch(searchInput, (newValue) => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+  isFiltering.value = true
+  searchDebounceTimer = setTimeout(() => {
+    searchText.value = newValue
+    isFiltering.value = false
+  }, 300)
+})
 
 const tableHeaders = computed(() => {
   if (store.displayColumns.length === 0) {
@@ -16,6 +32,50 @@ const tableHeaders = computed(() => {
     headers.push(`B: ${col}`)
   }
   return headers
+})
+
+// Use shallowRef to avoid deep reactivity on large arrays
+const cachedFilteredResults = shallowRef(store.similarityResults)
+const lastSearchText = ref('')
+const lastDisplayColumns = ref<string[]>([])
+
+// Only recompute when search or display columns actually change
+const filteredResults = computed(() => {
+  const currentSearch = searchText.value.trim()
+  const displayColumnsChanged = JSON.stringify(store.displayColumns) !== JSON.stringify(lastDisplayColumns.value)
+  
+  // Only re-filter if search text changed or display columns changed (for search functionality)
+  if (currentSearch === lastSearchText.value && !displayColumnsChanged) {
+    return cachedFilteredResults.value
+  }
+
+  lastSearchText.value = currentSearch
+  lastDisplayColumns.value = [...store.displayColumns]
+
+  if (!currentSearch) {
+    cachedFilteredResults.value = store.similarityResults
+    return store.similarityResults
+  }
+
+  const search = currentSearch.toLowerCase()
+  const filtered = store.similarityResults.filter((result) => {
+    // Check if any display column contains the search text
+    for (const col of store.displayColumns) {
+      const valueA = store.csvRows[result.rowIndexA]?.[col] || ''
+      const valueB = store.csvRows[result.rowIndexB]?.[col] || ''
+      if (valueA.toLowerCase().includes(search) || valueB.toLowerCase().includes(search)) {
+        return true
+      }
+    }
+    return false
+  })
+  
+  cachedFilteredResults.value = filtered
+  return filtered
+})
+
+const displayedResults = computed(() => {
+  return filteredResults.value.slice(0, store.maxDisplayRows)
 })
 
 const allFields = computed(() => {
@@ -78,17 +138,25 @@ function isRowExpanded(index: number): boolean {
       <div class="results-header">
         <h2>Comparison Results</h2>
         <div class="controls">
+          <label class="search-control">
+            <input
+              v-model="searchInput"
+              type="text"
+              placeholder="Search in displayed columns..."
+              class="search-input"
+            />
+          </label>
           <label class="row-limit-control">
             Show top
             <input
               v-model="customRowLimit"
               type="number"
               min="1"
-              :max="store.similarityResults.length"
+              :max="filteredResults.length"
               @change="updateRowLimit"
               class="row-limit-input"
             />
-            rows (of {{ store.similarityResults.length }} total pairs)
+            rows (of {{ filteredResults.length }} filtered / {{ store.similarityResults.length }} total pairs)
           </label>
         </div>
       </div>
@@ -102,7 +170,7 @@ function isRowExpanded(index: number): boolean {
             </tr>
           </thead>
           <tbody>
-            <template v-for="(result, index) in store.displayedResults" :key="index">
+            <template v-for="(result, index) in displayedResults" :key="index">
               <tr
                 :class="['result-row', { expanded: isRowExpanded(index) }]"
                 @click="toggleRow(index)"
@@ -233,6 +301,30 @@ function isRowExpanded(index: number): boolean {
   display: flex;
   gap: 1rem;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.search-control {
+  flex: 1;
+  min-width: 250px;
+}
+
+.search-input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.95rem;
+  border: 2px solid #ddd;
+  border-radius: 6px;
+  transition: border-color 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #42b883;
+}
+
+.search-input::placeholder {
+  color: #999;
 }
 
 .row-limit-control {
