@@ -310,42 +310,81 @@ async function hierarchicalClustering(
   k: number,
   onProgress?: (progress: number) => void,
 ): Promise<Cluster[]> {
-  // Simple agglomerative hierarchical clustering
+  // Centroid-based agglomerative hierarchical clustering
   const n = embeddings.length
+  const dimension = embeddings[0]?.length || 0
 
-  // Start with each point as its own cluster
-  const clusters: number[][] = embeddings.map((_, i) => [i])
+  // Helper to calculate and normalize centroid
+  const calculateCentroid = (indices: number[]): number[] => {
+    const centroid = new Array(dimension).fill(0)
+
+    for (const idx of indices) {
+      const emb = embeddings[idx]
+      if (emb) {
+        for (let d = 0; d < dimension; d++) {
+          centroid[d] += emb[d] || 0
+        }
+      }
+    }
+
+    for (let d = 0; d < dimension; d++) {
+      centroid[d] /= indices.length
+    }
+
+    // Normalize
+    const norm = Math.sqrt(centroid.reduce((sum, val) => sum + val * val, 0))
+    if (norm > 0) {
+      for (let d = 0; d < dimension; d++) {
+        centroid[d] /= norm
+      }
+    }
+
+    return centroid
+  }
+
+  // Start with each point as its own cluster with its centroid
+  interface ClusterData {
+    indices: number[]
+    centroid: number[]
+  }
+
+  const clusters: ClusterData[] = embeddings.map((emb, i) => ({
+    indices: [i],
+    centroid: [...emb],
+  }))
 
   while (clusters.length > k) {
     let maxSim = -Infinity
     let mergeI = 0
     let mergeJ = 1
 
-    // Find most similar pair of clusters
+    // Find most similar pair based on centroid similarity
     for (let i = 0; i < clusters.length; i++) {
       for (let j = i + 1; j < clusters.length; j++) {
         const clusterI = clusters[i]
         const clusterJ = clusters[j]
         if (!clusterI || !clusterJ) continue
 
-        // Calculate average linkage similarity
-        let totalSim = 0
-        let count = 0
+        // Calculate centroid similarity
+        const centroidSim = cosineSimilarity(clusterI.centroid, clusterJ.centroid)
 
-        for (const idx1 of clusterI) {
-          for (const idx2 of clusterJ) {
-            const emb1 = embeddings[idx1]
-            const emb2 = embeddings[idx2]
-            if (emb1 && emb2) {
-              totalSim += cosineSimilarity(emb1, emb2)
-              count++
-            }
-          }
-        }
+        // Apply aggressive size balancing to prevent giant clusters
+        const sizeA = clusterI.indices.length
+        const sizeB = clusterJ.indices.length
+        const totalSize = sizeA + sizeB
+        const sizeRatio = Math.min(sizeA, sizeB) / Math.max(sizeA, sizeB)
 
-        const avgSim = totalSim / count
-        if (avgSim > maxSim) {
-          maxSim = avgSim
+        // Strong bonus for equal-sized merges (up to 3x multiplier)
+        const sizeBonus = 1.0 + sizeRatio * 2.0
+
+        // Penalty for creating very large clusters
+        const maxReasonableSize = Math.ceil(embeddings.length / k) * 1.5
+        const largeSizePenalty = totalSize > maxReasonableSize ? 0.5 : 1.0
+
+        const adjustedSim = centroidSim * sizeBonus * largeSizePenalty
+
+        if (adjustedSim > maxSim) {
+          maxSim = adjustedSim
           mergeI = i
           mergeJ = j
         }
@@ -356,7 +395,13 @@ async function hierarchicalClustering(
     const clusterI = clusters[mergeI]
     const clusterJ = clusters[mergeJ]
     if (clusterI && clusterJ) {
-      clusters[mergeI] = [...clusterI, ...clusterJ]
+      const mergedIndices = [...clusterI.indices, ...clusterJ.indices]
+      const mergedCentroid = calculateCentroid(mergedIndices)
+
+      clusters[mergeI] = {
+        indices: mergedIndices,
+        centroid: mergedCentroid,
+      }
       clusters.splice(mergeJ, 1)
     }
 
@@ -365,51 +410,272 @@ async function hierarchicalClustering(
     }
   }
 
-  // Build final clusters with centroids
-  return clusters.map((documentIndices) => {
-    // Calculate centroid as mean of embeddings
-    const dimension = embeddings[0]?.length || 0
-    const centroid = new Array(dimension).fill(0)
-
-    for (const idx of documentIndices) {
-      const emb = embeddings[idx]
-      if (emb) {
-        for (let d = 0; d < dimension; d++) {
-          const val = emb[d]
-          if (val !== undefined) {
-            centroid[d] += val
-          }
-        }
-      }
-    }
-
-    for (let d = 0; d < dimension; d++) {
-      centroid[d] /= documentIndices.length
-    }
-
-    // Normalize
-    const norm = Math.sqrt(centroid.reduce((sum, val) => sum + val * val, 0))
-    for (let d = 0; d < dimension; d++) {
-      centroid[d] /= norm
-    }
-
+  // Build final clusters with coherence
+  return clusters.map((cluster) => {
     // Calculate coherence
     const coherence =
-      documentIndices.reduce((sum, idx) => {
+      cluster.indices.reduce((sum, idx) => {
         const emb = embeddings[idx]
-        return sum + (emb ? cosineSimilarity(emb, centroid) : 0)
-      }, 0) / documentIndices.length
+        return sum + (emb ? cosineSimilarity(emb, cluster.centroid) : 0)
+      }, 0) / cluster.indices.length
 
     return {
-      centroid,
-      documentIndices,
+      centroid: cluster.centroid,
+      documentIndices: cluster.indices,
       coherence,
     }
   })
 }
 
 // Extract top keywords using TF-IDF
-export function extractTopKeywords(texts: string[], topN: number = 10): string[] {
+// Stop word presets
+export const STOPWORDS_MINIMAL = [
+  'the',
+  'be',
+  'to',
+  'of',
+  'and',
+  'a',
+  'in',
+  'that',
+  'have',
+  'i',
+  'it',
+  'for',
+  'not',
+  'on',
+  'with',
+  'he',
+  'as',
+  'you',
+  'do',
+  'at',
+  'this',
+  'but',
+  'his',
+  'by',
+  'from',
+  'they',
+  'we',
+  'say',
+  'her',
+  'she',
+  'or',
+  'an',
+  'will',
+  'my',
+  'one',
+  'all',
+  'would',
+  'there',
+  'their',
+] as const
+
+export const STOPWORDS_STANDARD = [
+  ...STOPWORDS_MINIMAL,
+  'is',
+  'are',
+  'was',
+  'were',
+  'been',
+  'has',
+  'had',
+  'can',
+  'could',
+  'should',
+  'may',
+  'might',
+  'must',
+  'shall',
+  'would',
+  'what',
+  'which',
+  'who',
+  'when',
+  'where',
+  'how',
+  'why',
+  'about',
+  'into',
+  'through',
+  'over',
+  'under',
+  'between',
+  'among',
+  'these',
+  'those',
+  'such',
+  'very',
+  'just',
+  'than',
+  'then',
+  'so',
+  'if',
+  'out',
+  'up',
+  'down',
+  'who',
+  'some',
+  'any',
+  'no',
+  'more',
+  'only',
+  'other',
+  'its',
+  'now',
+  'also',
+  'being',
+  'here',
+  'after',
+  'before',
+  'does',
+  'did',
+  'having',
+  'each',
+  'both',
+  'few',
+  'more',
+  'most',
+  'same',
+  'too',
+] as const
+
+export const STOPWORDS_EXTENSIVE = [
+  ...STOPWORDS_STANDARD,
+  'because',
+  'while',
+  'during',
+  'without',
+  'within',
+  'against',
+  'upon',
+  'below',
+  'above',
+  'across',
+  'around',
+  'since',
+  'until',
+  'unless',
+  'although',
+  'though',
+  'whether',
+  'however',
+  'therefore',
+  'thus',
+  'hence',
+  'moreover',
+  'furthermore',
+  'nevertheless',
+  'nonetheless',
+  'meanwhile',
+  'otherwise',
+  'instead',
+  'besides',
+  'indeed',
+  'actually',
+  'really',
+  'quite',
+  'rather',
+  'enough',
+  'almost',
+  'even',
+  'still',
+  'already',
+  'yet',
+  'ever',
+  'never',
+  'always',
+  'often',
+  'sometimes',
+  'usually',
+  'perhaps',
+  'maybe',
+  'probably',
+  'possibly',
+  'certainly',
+  'definitely',
+  'sure',
+  'ok',
+  'yes',
+  'no',
+  'well',
+  'oh',
+  'um',
+  'uh',
+  'ah',
+  'like',
+  'know',
+  'thing',
+  'things',
+  'stuff',
+  'get',
+  'got',
+  'gotten',
+  'make',
+  'made',
+  'go',
+  'went',
+  'come',
+  'came',
+  'take',
+  'took',
+  'give',
+  'gave',
+  'use',
+  'used',
+  'find',
+  'found',
+  'tell',
+  'told',
+  'ask',
+  'asked',
+  'work',
+  'worked',
+  'seem',
+  'seemed',
+  'feel',
+  'felt',
+  'try',
+  'tried',
+  'leave',
+  'left',
+  'call',
+  'called',
+] as const
+
+export function getStopWordsSet(
+  preset: 'minimal' | 'standard' | 'extensive',
+  customStopWordsStr: string,
+): Set<string> {
+  let presetWords: readonly string[]
+
+  switch (preset) {
+    case 'minimal':
+      presetWords = STOPWORDS_MINIMAL
+      break
+    case 'standard':
+      presetWords = STOPWORDS_STANDARD
+      break
+    case 'extensive':
+      presetWords = STOPWORDS_EXTENSIVE
+      break
+  }
+
+  const customWords = customStopWordsStr
+    .toLowerCase()
+    .split(',')
+    .map((w) => w.trim())
+    .filter((w) => w.length > 0)
+
+  return new Set([...presetWords, ...customWords])
+}
+
+export function extractTopKeywords(
+  texts: string[],
+  topN: number = 10,
+  stopWordsSet: Set<string> = new Set(STOPWORDS_STANDARD),
+  ngramSize: number = 1,
+): string[] {
   // Tokenize and count term frequencies
   const tokenize = (text: string) =>
     text
@@ -418,47 +684,25 @@ export function extractTopKeywords(texts: string[], topN: number = 10): string[]
       .split(/\s+/)
       .filter((w) => w.length > 2)
 
-  const stopWords = new Set([
-    'the',
-    'be',
-    'to',
-    'of',
-    'and',
-    'a',
-    'in',
-    'that',
-    'have',
-    'i',
-    'it',
-    'for',
-    'not',
-    'on',
-    'with',
-    'he',
-    'as',
-    'you',
-    'do',
-    'at',
-    'this',
-    'but',
-    'his',
-    'by',
-    'from',
-    'they',
-    'we',
-    'say',
-    'her',
-    'she',
-    'or',
-    'an',
-    'will',
-    'my',
-    'one',
-    'all',
-    'would',
-    'there',
-    'their',
-  ])
+  // Generate n-grams from token array
+  const generateNgrams = (tokens: string[]): string[] => {
+    if (ngramSize === 1) {
+      return tokens
+    }
+
+    const ngrams: string[] = []
+    for (let i = 0; i <= tokens.length - ngramSize; i++) {
+      const ngram = tokens.slice(i, i + ngramSize).join(' ')
+      ngrams.push(ngram)
+    }
+    return ngrams
+  }
+
+  // Filter function for n-grams - exclude if ANY word is a stop word
+  const shouldIncludeNgram = (ngram: string): boolean => {
+    const words = ngram.split(' ')
+    return !words.some((w) => stopWordsSet.has(w))
+  }
 
   // Term frequency in cluster
   const termFreq = new Map<string, number>()
@@ -466,15 +710,16 @@ export function extractTopKeywords(texts: string[], topN: number = 10): string[]
   const docFreq = new Map<string, number>()
 
   for (const text of texts) {
-    const tokens = tokenize(text).filter((t) => !stopWords.has(t))
-    const uniqueTokens = new Set(tokens)
+    const tokens = tokenize(text)
+    const ngrams = generateNgrams(tokens).filter(shouldIncludeNgram)
+    const uniqueNgrams = new Set(ngrams)
 
-    for (const token of tokens) {
-      termFreq.set(token, (termFreq.get(token) || 0) + 1)
+    for (const ngram of ngrams) {
+      termFreq.set(ngram, (termFreq.get(ngram) || 0) + 1)
     }
 
-    for (const token of uniqueTokens) {
-      docFreq.set(token, (docFreq.get(token) || 0) + 1)
+    for (const ngram of uniqueNgrams) {
+      docFreq.set(ngram, (docFreq.get(ngram) || 0) + 1)
     }
   }
 

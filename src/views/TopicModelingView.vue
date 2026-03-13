@@ -82,6 +82,46 @@
         <span class="setting-hint">Number of representative keywords (5-20)</span>
       </div>
 
+      <div class="setting-row">
+        <label for="ngram-size">N-gram Size:</label>
+        <input
+          id="ngram-size"
+          type="number"
+          v-model.number="store.ngramSize"
+          min="1"
+          max="3"
+          :disabled="store.isAnalyzing"
+        />
+        <span class="setting-hint">Token combination size (1=unigrams, 2=bigrams, 3=trigrams)</span>
+      </div>
+
+      <div class="setting-row">
+        <label for="stopwords-preset">Stop Words Preset:</label>
+        <select id="stopwords-preset" v-model="store.stopWordsPreset" :disabled="store.isAnalyzing">
+          <option value="minimal">Minimal (~40 words)</option>
+          <option value="standard">Standard (~100 words)</option>
+          <option value="extensive">Extensive (~170 words)</option>
+        </select>
+        <span class="setting-hint">Common words to exclude from keywords</span>
+      </div>
+
+      <div class="setting-row stop-words-row">
+        <label for="custom-stopwords">Custom Stop Words:</label>
+        <textarea
+          id="custom-stopwords"
+          v-model="store.customStopWords"
+          :disabled="store.isAnalyzing"
+          placeholder="enter, custom, words, here (comma-separated)"
+          rows="3"
+        ></textarea>
+        <span class="setting-hint">
+          {{ customStopWordsCount }} custom words (merges with preset)
+          <span v-if="customStopWordsCount > 100" class="warning-text">
+            ⚠️ Large custom list may affect performance
+          </span>
+        </span>
+      </div>
+
       <button
         @click="runAnalysis"
         :disabled="!store.canAnalyze || store.isAnalyzing"
@@ -118,6 +158,14 @@ import TopicResults from '@/components/TopicResults.vue'
 const store = useTopicModelingStore()
 const selectedModel = ref(store.selectedModel)
 const error = ref<string | null>(null)
+
+const customStopWordsCount = computed(() => {
+  if (!store.customStopWords.trim()) return 0
+  return store.customStopWords
+    .split(',')
+    .map((w) => w.trim())
+    .filter((w) => w.length > 0).length
+})
 
 const progressText = computed(() => {
   switch (store.analysisPhase) {
@@ -269,6 +317,32 @@ h1 {
 .setting-hint {
   font-size: 0.875rem;
   color: #666;
+}
+
+.stop-words-row {
+  flex-wrap: wrap;
+}
+
+.stop-words-row textarea {
+  flex: 1 1 100%;
+  min-width: 300px;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  resize: vertical;
+  margin-bottom: 0.5rem;
+}
+
+.stop-words-row .setting-hint {
+  flex: 1 1 100%;
+  margin-top: 0;
+}
+
+.warning-text {
+  color: #ff9800;
+  font-weight: 600;
 }
 
 .analyze-button {

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type { CsvRow } from '@/utils/csvParser'
 import { parseCSV } from '@/utils/csvParser'
 import { parseXlsx } from '@/utils/xlsxParser'
@@ -7,6 +7,7 @@ import {
   initializeModel,
   generateEmbeddings,
   AVAILABLE_MODELS,
+  getStopWordsSet,
   type ModelName,
   type ClusteringMethod,
 } from '@/utils/topicModeling'
@@ -41,6 +42,9 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
   const clusteringMethod = ref<ClusteringMethod>('kmeans')
   const numberOfTopics = ref(5)
   const topKeywords = ref(10)
+  const ngramSize = ref(1)
+  const stopWordsPreset = ref<'minimal' | 'standard' | 'extensive'>('standard')
+  const customStopWords = ref(localStorage.getItem('compear_custom_stopwords') || '')
 
   // Results
   const embeddings = ref<number[][]>([])
@@ -53,6 +57,10 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
   const selectedTopicId = ref<number | null>(null)
 
   // Computed
+  const mergedStopWords = computed(() =>
+    getStopWordsSet(stopWordsPreset.value, customStopWords.value),
+  )
+
   const hasData = computed(() => csvRows.value.length > 0)
   const canAnalyze = computed(
     () => hasData.value && analysisColumns.value.length > 0 && isModelReady.value,
@@ -198,9 +206,17 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
       }
       topics.value = (clusters as ClusterResult[]).map((cluster, idx: number) => {
         const clusterTexts = cluster.documentIndices
-          .map((i: number) => csvRows.value[i]?.[analysisColumns.value[0]!])
+          .map((i: number) => {
+            const row = csvRows.value[i]
+            return analysisColumns.value.map((col) => row?.[col] || '').join(' ')
+          })
           .filter((text): text is string => text !== undefined)
-        const keywords = extractTopKeywords(clusterTexts, topKeywords.value)
+        const keywords = extractTopKeywords(
+          clusterTexts,
+          topKeywords.value,
+          mergedStopWords.value,
+          ngramSize.value,
+        )
 
         return {
           id: idx,
@@ -235,6 +251,11 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
     selectedTopicId.value = null
   }
 
+  // Watch custom stop words and persist to localStorage
+  watch(customStopWords, (newValue) => {
+    localStorage.setItem('compear_custom_stopwords', newValue)
+  })
+
   // Start loading model on store creation
   loadModel()
 
@@ -253,6 +274,9 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
     clusteringMethod,
     numberOfTopics,
     topKeywords,
+    ngramSize,
+    stopWordsPreset,
+    customStopWords,
     embeddings,
     topics,
     isAnalyzing,
@@ -268,6 +292,7 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
     canAnalyze,
     selectedTopic,
     topicDocuments,
+    mergedStopWords,
 
     // Actions
     loadModel,

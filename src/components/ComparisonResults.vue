@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, shallowRef } from 'vue'
 import { useComparisonStore } from '@/stores/comparison'
+import { generateEmbedding } from '@/utils/embeddings'
+import { cosineSimilarity } from '@/utils/similarity'
 
 const store = useComparisonStore()
 const customRowLimit = ref(50)
@@ -9,6 +11,76 @@ const searchInput = ref('')
 const searchText = ref('')
 const isFiltering = ref(false)
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+// Semantic search state
+const semanticSearchInput = ref('')
+interface SemanticSearchResult {
+  rowIndex: number
+  score: number
+}
+const semanticSearchResults = shallowRef<SemanticSearchResult[]>([]) // Sorted rows by similarity
+const isSemanticSearching = ref(false)
+const semanticSearchLimit = ref(50)
+const expandedSemanticRows = ref<Set<number>>(new Set())
+
+async function performSemanticSearch() {
+  const query = semanticSearchInput.value.trim()
+
+  if (!query) {
+    semanticSearchResults.value = []
+    return
+  }
+
+  if (!store.isModelReady || store.embeddings.length === 0) {
+    return
+  }
+
+  isSemanticSearching.value = true
+
+  try {
+    // Generate embedding for the search query
+    const queryEmbedding = await generateEmbedding(query)
+
+    // Calculate similarity for all rows
+    const results: SemanticSearchResult[] = []
+    for (let i = 0; i < store.embeddings.length; i++) {
+      const score = cosineSimilarity(queryEmbedding, store.embeddings[i]!)
+      results.push({ rowIndex: i, score })
+    }
+
+    // Sort by similarity descending
+    results.sort((a, b) => b.score - a.score)
+
+    semanticSearchResults.value = results
+    expandedSemanticRows.value.clear()
+  } catch (error) {
+    console.error('Semantic search failed:', error)
+  } finally {
+    isSemanticSearching.value = false
+  }
+}
+
+function clearSemanticSearch() {
+  semanticSearchInput.value = ''
+  semanticSearchResults.value = []
+  expandedSemanticRows.value.clear()
+}
+
+const displayedSemanticResults = computed(() => {
+  return semanticSearchResults.value.slice(0, semanticSearchLimit.value)
+})
+
+function toggleSemanticRow(index: number) {
+  if (expandedSemanticRows.value.has(index)) {
+    expandedSemanticRows.value.delete(index)
+  } else {
+    expandedSemanticRows.value.add(index)
+  }
+}
+
+function isSemanticRowExpanded(index: number): boolean {
+  return expandedSemanticRows.value.has(index)
+}
 
 // Debounce search input to avoid blocking UI
 watch(searchInput, (newValue) => {
@@ -36,43 +108,35 @@ const tableHeaders = computed(() => {
 
 // Use shallowRef to avoid deep reactivity on large arrays
 const cachedFilteredResults = shallowRef(store.similarityResults)
-const lastSearchText = ref('')
-const lastDisplayColumns = ref<string[]>([])
 
-// Only recompute when search or display columns actually change
-const filteredResults = computed(() => {
-  const currentSearch = searchText.value.trim()
-  const displayColumnsChanged = JSON.stringify(store.displayColumns) !== JSON.stringify(lastDisplayColumns.value)
-  
-  // Only re-filter if search text changed or display columns changed (for search functionality)
-  if (currentSearch === lastSearchText.value && !displayColumnsChanged) {
-    return cachedFilteredResults.value
-  }
+// Watch for changes and update cached results (avoids side effects in computed)
+watch(
+  [searchText, () => store.displayColumns, () => store.similarityResults],
+  ([currentSearchText, displayColumns, results]) => {
+    const trimmedSearch = currentSearchText.trim()
 
-  lastSearchText.value = currentSearch
-  lastDisplayColumns.value = [...store.displayColumns]
-
-  if (!currentSearch) {
-    cachedFilteredResults.value = store.similarityResults
-    return store.similarityResults
-  }
-
-  const search = currentSearch.toLowerCase()
-  const filtered = store.similarityResults.filter((result) => {
-    // Check if any display column contains the search text
-    for (const col of store.displayColumns) {
-      const valueA = store.csvRows[result.rowIndexA]?.[col] || ''
-      const valueB = store.csvRows[result.rowIndexB]?.[col] || ''
-      if (valueA.toLowerCase().includes(search) || valueB.toLowerCase().includes(search)) {
-        return true
-      }
+    if (!trimmedSearch) {
+      cachedFilteredResults.value = results
+      return
     }
-    return false
-  })
-  
-  cachedFilteredResults.value = filtered
-  return filtered
-})
+
+    const search = trimmedSearch.toLowerCase()
+    cachedFilteredResults.value = results.filter((result) => {
+      // Check if any display column contains the search text
+      for (const col of displayColumns) {
+        const valueA = store.csvRows[result.rowIndexA]?.[col] || ''
+        const valueB = store.csvRows[result.rowIndexB]?.[col] || ''
+        if (valueA.toLowerCase().includes(search) || valueB.toLowerCase().includes(search)) {
+          return true
+        }
+      }
+      return false
+    })
+  },
+  { immediate: true },
+)
+
+const filteredResults = computed(() => cachedFilteredResults.value)
 
 const displayedResults = computed(() => {
   return filteredResults.value.slice(0, store.maxDisplayRows)
@@ -142,7 +206,7 @@ function isRowExpanded(index: number): boolean {
             <input
               v-model="searchInput"
               type="text"
-              placeholder="Search in displayed columns..."
+              placeholder="Filter by text..."
               class="search-input"
             />
           </label>
@@ -156,7 +220,8 @@ function isRowExpanded(index: number): boolean {
               @change="updateRowLimit"
               class="row-limit-input"
             />
-            rows (of {{ filteredResults.length }} filtered / {{ store.similarityResults.length }} total pairs)
+            rows (of {{ filteredResults.length }} filtered /
+            {{ store.similarityResults.length }} total pairs)
           </label>
         </div>
       </div>
@@ -226,6 +291,106 @@ function isRowExpanded(index: number): boolean {
             </template>
           </tbody>
         </table>
+      </div>
+
+      <!-- Semantic Search Section -->
+      <div class="semantic-search-section">
+        <div class="semantic-header">
+          <h2>Semantic Search</h2>
+          <div class="semantic-controls">
+            <div class="semantic-input-wrapper">
+              <input
+                v-model="semanticSearchInput"
+                type="text"
+                placeholder="Search by meaning (press Enter)..."
+                class="semantic-search-input"
+                :disabled="isSemanticSearching || !store.isModelReady || store.embeddings.length === 0"
+                @keydown.enter="performSemanticSearch"
+              />
+              <button
+                v-if="semanticSearchResults.length > 0"
+                class="clear-semantic-btn"
+                @click="clearSemanticSearch"
+                title="Clear semantic search"
+              >
+                ×
+              </button>
+              <span v-if="isSemanticSearching" class="semantic-loading">⏳</span>
+            </div>
+            <label v-if="semanticSearchResults.length > 0" class="semantic-limit-control">
+              Show top
+              <input
+                v-model="semanticSearchLimit"
+                type="number"
+                min="1"
+                :max="semanticSearchResults.length"
+                class="semantic-limit-input"
+              />
+              of {{ semanticSearchResults.length }} rows
+            </label>
+          </div>
+        </div>
+
+        <div v-if="store.embeddings.length === 0" class="semantic-hint">
+          <p>Run comparison first to enable semantic search.</p>
+        </div>
+
+        <div v-else-if="semanticSearchResults.length === 0 && !isSemanticSearching" class="semantic-hint">
+          <p>Enter a query and press Enter to find similar rows.</p>
+        </div>
+
+        <div v-else-if="semanticSearchResults.length > 0" class="table-wrapper">
+          <table class="results-table semantic-results-table">
+            <thead>
+              <tr>
+                <th class="row-number">#</th>
+                <th class="score-header">Similarity</th>
+                <th v-for="col in store.displayColumns" :key="col">{{ col }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="(result, index) in displayedSemanticResults" :key="index">
+                <tr
+                  :class="['result-row', { expanded: isSemanticRowExpanded(index) }]"
+                  @click="toggleSemanticRow(index)"
+                >
+                  <td class="row-number">{{ index + 1 }}</td>
+                  <td :class="['score-cell', getScoreClass(result.score)]">
+                    {{ formatScore(result.score) }}
+                  </td>
+                  <td v-for="col in store.displayColumns" :key="col" class="data-cell">
+                    {{ store.csvRows[result.rowIndex]?.[col] || '-' }}
+                  </td>
+                </tr>
+
+                <!-- Expanded row details -->
+                <tr v-if="isSemanticRowExpanded(index)" class="expanded-details">
+                  <td :colspan="store.displayColumns.length + 2">
+                    <div class="details-container">
+                      <h4>All Fields</h4>
+                      <table class="details-table">
+                        <thead>
+                          <tr>
+                            <th>Field Name</th>
+                            <th>Value</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="field in allFields" :key="field">
+                            <td class="field-name">{{ field }}</td>
+                            <td class="field-value">
+                              {{ store.csvRows[result.rowIndex]?.[field] || '-' }}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -306,7 +471,7 @@ function isRowExpanded(index: number): boolean {
 
 .search-control {
   flex: 1;
-  min-width: 250px;
+  min-width: 200px;
 }
 
 .search-input {
@@ -325,6 +490,117 @@ function isRowExpanded(index: number): boolean {
 
 .search-input::placeholder {
   color: #999;
+}
+
+/* Semantic Search Section */
+.semantic-search-section {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 2px solid #e0e0e0;
+}
+
+.semantic-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.semantic-header h2 {
+  font-size: 1.5rem;
+  margin: 0;
+  color: #7b1fa2;
+}
+
+.semantic-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.semantic-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 300px;
+}
+
+.semantic-search-input {
+  width: 100%;
+  padding: 0.5rem 2rem 0.5rem 0.75rem;
+  font-size: 0.95rem;
+  border: 2px solid #9c27b0;
+  border-radius: 6px;
+  transition: border-color 0.2s;
+  background: #faf5ff;
+}
+
+.semantic-search-input:focus {
+  outline: none;
+  border-color: #7b1fa2;
+}
+
+.semantic-search-input::placeholder {
+  color: #9c27b0;
+  opacity: 0.6;
+}
+
+.semantic-search-input:disabled {
+  background: #f5f5f5;
+  border-color: #ccc;
+  cursor: not-allowed;
+}
+
+.clear-semantic-btn {
+  position: absolute;
+  right: 0.5rem;
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  color: #9c27b0;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+
+.clear-semantic-btn:hover {
+  color: #7b1fa2;
+}
+
+.semantic-loading {
+  position: absolute;
+  right: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.semantic-limit-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.semantic-limit-input {
+  width: 80px;
+  padding: 0.4rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.semantic-hint {
+  text-align: center;
+  padding: 2rem;
+  color: #666;
+  font-style: italic;
+}
+
+.semantic-results-table .score-header {
+  width: 120px;
 }
 
 .row-limit-control {

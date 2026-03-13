@@ -169,6 +169,8 @@ async function handleCompare() {
       </div>
     </div>
 
+    <!-- here -->
+
     <div v-if="store.hasData" class="action-section">
       <button
         @click="handleCompare"

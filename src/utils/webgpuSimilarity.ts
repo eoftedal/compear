@@ -295,6 +295,9 @@ const hierarchicalShaderCode = `
 struct Params {
   numClusters: u32,
   vectorDim: u32,
+  totalPairs: u32,
+  totalDocs: u32,
+  targetK: u32,
 }
 
 @group(0) @binding(0) var<storage, read> centroids: array<f32>;
@@ -328,11 +331,9 @@ fn cosineSimilarity(centroidIdxA: u32, centroidIdxB: u32) -> f32 {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-  let numClusters = params.numClusters;
-  let totalPairs = (numClusters * (numClusters - 1u)) / 2u;
   let pairIdx = global_id.x;
 
-  if (pairIdx >= totalPairs) {
+  if (pairIdx >= params.totalPairs) {
     return;
   }
 
@@ -340,9 +341,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   var i: u32 = 0u;
   var j: u32 = 0u;
   var remaining = pairIdx;
-  var rowSize = numClusters - 1u;
+  var rowSize = params.numClusters - 1u;
 
-  for (var row: u32 = 0u; row < numClusters; row = row + 1u) {
+  for (var row: u32 = 0u; row < params.numClusters; row = row + 1u) {
     if (remaining < rowSize) {
       i = row;
       j = row + remaining + 1u;
@@ -352,9 +353,24 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     rowSize -= 1u;
   }
 
-  // Calculate average linkage similarity
   let sim = cosineSimilarity(i, j);
-  similarities[pairIdx] = sim;
+
+  // Apply aggressive size balancing to prevent giant clusters
+  let sizeA = f32(clusterSizes[i]);
+  let sizeB = f32(clusterSizes[j]);
+  let totalSize = sizeA + sizeB;
+  let sizeRatio = min(sizeA, sizeB) / max(sizeA, sizeB);
+
+  // Strong bonus for equal-sized merges (up to 3x multiplier)
+  let sizeBonus = 1.0 + (sizeRatio * 2.0);
+
+  // Penalty for creating very large clusters
+  // Calculate based on total docs and target k, not current cluster count
+  let avgSize = f32(params.totalDocs) / f32(params.targetK);
+  let maxReasonableSize = avgSize * 1.5;
+  let largeSizePenalty = select(1.0, 0.5, totalSize > maxReasonableSize);
+
+  similarities[pairIdx] = sim * sizeBonus * largeSizePenalty;
 }
 `
 
@@ -687,7 +703,7 @@ export async function hierarchicalClusteringGPU(
     })
 
     const paramsBuffer = gpuDevice.createBuffer({
-      size: 8, // 2 x u32
+      size: 20, // 5 x u32 (numClusters, vectorDim, totalPairs, totalDocs, targetK)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
 
@@ -699,7 +715,11 @@ export async function hierarchicalClusteringGPU(
     // Write data
     gpuDevice.queue.writeBuffer(centroidsBuffer, 0, flatCentroids)
     gpuDevice.queue.writeBuffer(clusterSizesBuffer, 0, clusterSizes)
-    gpuDevice.queue.writeBuffer(paramsBuffer, 0, new Uint32Array([numClusters, vectorDim]))
+    gpuDevice.queue.writeBuffer(
+      paramsBuffer,
+      0,
+      new Uint32Array([numClusters, vectorDim, totalPairs, n, k]),
+    )
 
     // Create bind group
     const bindGroup = gpuDevice.createBindGroup({
@@ -744,17 +764,17 @@ export async function hierarchicalClusteringGPU(
     paramsBuffer.destroy()
     stagingBuffer.destroy()
 
-    // Find the pair with maximum similarity
-    let maxSim = -Infinity
+    // Find the pair with maximum similarity, with preference for smaller clusters
+    let maxScore = -Infinity
     let mergeI = 0
     let mergeJ = 1
 
     let pairIdx = 0
     for (let i = 0; i < numClusters; i++) {
       for (let j = i + 1; j < numClusters; j++) {
-        const sim = similarities[pairIdx]!
-        if (sim > maxSim) {
-          maxSim = sim
+        const score = similarities[pairIdx]!
+        if (score > maxScore) {
+          maxScore = score
           mergeI = i
           mergeJ = j
         }
