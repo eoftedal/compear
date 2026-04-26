@@ -23,6 +23,36 @@ const isSemanticSearching = ref(false)
 const semanticSearchLimit = ref(50)
 const expandedSemanticRows = ref<Set<number>>(new Set())
 
+// Similar talks state
+const similarTalksMap = ref<Map<number, SemanticSearchResult[]>>(new Map())
+const similarTalksLimit = ref(10)
+
+function findSimilarTalks(rowIndex: number) {
+  if (store.embeddings.length === 0) return
+  const targetEmbedding = store.embeddings[rowIndex]
+  if (!targetEmbedding) return
+
+  const results: SemanticSearchResult[] = []
+  for (let i = 0; i < store.embeddings.length; i++) {
+    if (i === rowIndex) continue
+    const score = cosineSimilarity(targetEmbedding, store.embeddings[i]!)
+    results.push({ rowIndex: i, score })
+  }
+  results.sort((a, b) => b.score - a.score)
+
+  const newMap = new Map(similarTalksMap.value)
+  newMap.set(rowIndex, results)
+  similarTalksMap.value = newMap
+}
+
+function getSimilarTalks(rowIndex: number): SemanticSearchResult[] {
+  return (similarTalksMap.value.get(rowIndex) ?? []).slice(0, similarTalksLimit.value)
+}
+
+function hasSimilarTalks(rowIndex: number): boolean {
+  return similarTalksMap.value.has(rowIndex)
+}
+
 async function performSemanticSearch() {
   const query = semanticSearchInput.value.trim()
 
@@ -367,6 +397,47 @@ function isRowExpanded(index: number): boolean {
                 <tr v-if="isSemanticRowExpanded(index)" class="expanded-details">
                   <td :colspan="store.displayColumns.length + 2">
                     <div class="details-container">
+                      <div class="similar-talks-controls" @click.stop>
+                        <button
+                          class="find-similar-btn"
+                          @click="findSimilarTalks(result.rowIndex)"
+                        >
+                          Find similar talks
+                        </button>
+                        <label v-if="hasSimilarTalks(result.rowIndex)" class="similar-limit-control">
+                          Show top
+                          <input
+                            v-model.number="similarTalksLimit"
+                            type="number"
+                            min="1"
+                            :max="store.embeddings.length - 1"
+                            class="similar-limit-input"
+                          />
+                          talks
+                        </label>
+                      </div>
+
+                      <div v-if="hasSimilarTalks(result.rowIndex)" class="similar-talks-results" @click.stop>
+                        <table class="details-table similar-results-table">
+                          <thead>
+                            <tr>
+                              <th class="score-header">Similarity</th>
+                              <th v-for="col in store.displayColumns" :key="col">{{ col }}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="similar in getSimilarTalks(result.rowIndex)" :key="similar.rowIndex">
+                              <td :class="['score-cell', getScoreClass(similar.score)]">
+                                {{ formatScore(similar.score) }}
+                              </td>
+                              <td v-for="col in store.displayColumns" :key="col" class="field-value">
+                                {{ store.csvRows[similar.rowIndex]?.[col] || '-' }}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+
                       <h4>All Fields</h4>
                       <table class="details-table">
                         <thead>
@@ -597,6 +668,53 @@ function isRowExpanded(index: number): boolean {
   padding: 2rem;
   color: #666;
   font-style: italic;
+}
+
+.similar-talks-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.find-similar-btn {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.9rem;
+  background: #7b1fa2;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.find-similar-btn:hover {
+  background: #6a1899;
+}
+
+.similar-limit-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.similar-limit-input {
+  width: 70px;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.similar-talks-results {
+  margin-bottom: 1.5rem;
+}
+
+.similar-results-table .score-header {
+  width: 120px;
 }
 
 .semantic-results-table .score-header {
