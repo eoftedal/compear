@@ -886,6 +886,7 @@ function isRowExpanded(index: number): boolean {
 .field-value {
   color: #333;
   word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .details-table tbody tr:hover {
