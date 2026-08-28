@@ -1,135 +1,12 @@
-import { pipeline, env, type PipelineType } from '@huggingface/transformers'
 import {
   initializeWebGPU,
   isWebGPUAvailableForSimilarity,
   kMeansClusteringGPU,
   hierarchicalClusteringGPU,
 } from './webgpuSimilarity'
+import { mulberry32, kMeansPlusPlusInit } from './random'
 
-// Configure to use local models (cached in browser)
-env.allowLocalModels = false
-
-// Detect WebGPU availability
-let deviceConfig: { device?: 'webgpu' } = {}
-let deviceDetected = false
-
-async function detectWebGPU() {
-  if (deviceDetected) return
-  deviceDetected = true
-
-  if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const adapter = await (navigator as any).gpu?.requestAdapter()
-      if (adapter) {
-        deviceConfig = { device: 'webgpu' }
-        console.log('[TopicModeling] WebGPU acceleration enabled')
-        return
-      }
-    } catch (error) {
-      console.warn('[TopicModeling] WebGPU not available, falling back to WASM:', error)
-    }
-  }
-
-  // Fallback to WASM
-  if (env.backends?.onnx?.wasm) {
-    env.backends.onnx.wasm.numThreads = 1
-  }
-}
-
-// Available models optimized for semantic similarity and topic modeling
-export const AVAILABLE_MODELS = [
-  'Xenova/bge-small-en-v1.5',
-  'onnx-community/Qwen3-Embedding-0.6B-ONNX',
-  'Xenova/all-MiniLM-L6-v2',
-  'Xenova/all-MiniLM-L12-v2',
-  'nomic-ai/nomic-embed-text-v1.5',
-] as const
-
-export type ModelName = (typeof AVAILABLE_MODELS)[number]
 export type ClusteringMethod = 'kmeans' | 'hierarchical'
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let embeddingPipeline: any | null = null
-let currentModel: ModelName | null = null
-let isInitializing = false
-let initializationPromise: Promise<void> | null = null
-
-export async function initializeModel(
-  modelName: ModelName = 'Xenova/bge-small-en-v1.5',
-): Promise<void> {
-  await detectWebGPU()
-
-  if (embeddingPipeline && currentModel === modelName) {
-    return
-  }
-
-  if (currentModel && currentModel !== modelName) {
-    embeddingPipeline = null
-    currentModel = null
-  }
-
-  if (isInitializing && initializationPromise) {
-    return initializationPromise
-  }
-
-  isInitializing = true
-  initializationPromise = (async () => {
-    try {
-      embeddingPipeline = await pipeline(
-        'feature-extraction' as PipelineType,
-        modelName,
-        deviceConfig.device ? { device: deviceConfig.device } : {},
-      )
-      currentModel = modelName
-      console.log(`[TopicModeling] Model loaded: ${modelName} on ${deviceConfig.device || 'cpu'}`)
-    } finally {
-      isInitializing = false
-    }
-  })()
-
-  return initializationPromise
-}
-
-export async function generateEmbedding(text: string): Promise<number[]> {
-  if (!embeddingPipeline) {
-    throw new Error('Model not initialized. Call initializeModel() first.')
-  }
-
-  const output = await embeddingPipeline(text, {
-    pooling: 'mean',
-    normalize: true,
-    ...deviceConfig,
-  })
-
-  const tensor = output as { data: Float32Array }
-  return Array.from(tensor.data)
-}
-
-export async function generateEmbeddings(
-  texts: string[],
-  modelName: ModelName,
-  onProgress?: (current: number, total: number) => void,
-): Promise<number[][]> {
-  await initializeModel(modelName)
-
-  const embeddings: number[][] = []
-  const total = texts.length
-
-  for (let i = 0; i < texts.length; i++) {
-    const text = texts[i]
-    if (!text) continue
-
-    const embedding = await generateEmbedding(text)
-    embeddings.push(embedding)
-
-    if (onProgress) {
-      onProgress(i + 1, total)
-    }
-  }
-
-  return embeddings
-}
 
 // Cosine similarity between two vectors
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -149,7 +26,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // K-means clustering
-interface Cluster {
+export interface Cluster {
   centroid: number[]
   documentIndices: number[]
   coherence?: number
@@ -161,6 +38,15 @@ export async function performClustering(
   method: ClusteringMethod = 'kmeans',
   onProgress?: (progress: number) => void,
 ): Promise<Cluster[]> {
+  if (embeddings.length === 0) {
+    return []
+  }
+
+  // Asking for more clusters than documents would spin forever in centroid selection
+  const effectiveK = Math.max(1, Math.min(k, embeddings.length))
+
+  let clusters: Cluster[] | null = null
+
   // Try GPU acceleration first for both methods
   try {
     if (!isWebGPUAvailableForSimilarity()) {
@@ -170,25 +56,34 @@ export async function performClustering(
     if (isWebGPUAvailableForSimilarity()) {
       if (method === 'kmeans') {
         console.log('[TopicModeling] Using GPU-accelerated K-means clustering')
-        return await kMeansClusteringGPU(embeddings, k, onProgress)
+        clusters = await kMeansClusteringGPU(embeddings, effectiveK, onProgress)
       } else {
         console.log('[TopicModeling] Using GPU-accelerated hierarchical clustering')
-        return await hierarchicalClusteringGPU(embeddings, k, onProgress)
+        clusters = await hierarchicalClusteringGPU(embeddings, effectiveK, onProgress)
       }
     }
   } catch (error) {
     console.warn('[TopicModeling] GPU clustering failed, falling back to CPU:', error)
+    clusters = null
   }
 
   // Fallback to CPU
-  if (method === 'kmeans') {
-    console.log('[TopicModeling] Using CPU K-means clustering')
-    return kMeansClustering(embeddings, k, onProgress)
-  } else {
-    console.log('[TopicModeling] Using CPU hierarchical clustering')
-    return hierarchicalClustering(embeddings, k, onProgress)
+  if (!clusters) {
+    if (method === 'kmeans') {
+      console.log('[TopicModeling] Using CPU K-means clustering')
+      clusters = await kMeansClustering(embeddings, effectiveK, onProgress)
+    } else {
+      console.log('[TopicModeling] Using CPU hierarchical clustering')
+      clusters = await hierarchicalClustering(embeddings, effectiveK, onProgress)
+    }
   }
+
+  // K-means can leave clusters empty; drop them rather than showing "0 docs" topics
+  return clusters.filter((cluster) => cluster.documentIndices.length > 0)
 }
+
+// Let the browser paint progress updates between heavy iterations
+const yieldToUI = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
 async function kMeansClustering(
   embeddings: number[][],
@@ -202,16 +97,8 @@ async function kMeansClustering(
     return []
   }
 
-  // Initialize centroids randomly
-  const centroids: number[][] = []
-  const usedIndices = new Set<number>()
-  while (centroids.length < k) {
-    const idx = Math.floor(Math.random() * embeddings.length)
-    if (!usedIndices.has(idx) && embeddings[idx]) {
-      centroids.push([...embeddings[idx]!])
-      usedIndices.add(idx)
-    }
-  }
+  // Seeded k-means++ initialization: reproducible and spread across the data
+  const centroids = kMeansPlusPlusInit(embeddings, k, mulberry32(embeddings.length))
 
   let assignments = new Array(embeddings.length).fill(0)
   let converged = false
@@ -272,6 +159,7 @@ async function kMeansClustering(
     if (onProgress) {
       onProgress(iteration / maxIterations)
     }
+    await yieldToUI()
   }
 
   // Build clusters with coherence scores
@@ -408,6 +296,10 @@ async function hierarchicalClustering(
     if (onProgress) {
       onProgress((n - clusters.length) / (n - k))
     }
+    // Yield periodically; every merge would add ~4ms of timer clamping each
+    if (clusters.length % 10 === 0) {
+      await yieldToUI()
+    }
   }
 
   // Build final clusters with coherence
@@ -469,6 +361,32 @@ export const STOPWORDS_MINIMAL = [
   'would',
   'there',
   'their',
+  'your',
+  'yours',
+  'our',
+  'ours',
+  'us',
+  'me',
+  'him',
+  'them',
+  'am',
+  // Stems left over when contraction suffixes are stripped ("don't" -> "don")
+  'don',
+  'doesn',
+  'didn',
+  'isn',
+  'aren',
+  'wasn',
+  'weren',
+  'hasn',
+  'haven',
+  'hadn',
+  'won',
+  'wouldn',
+  'couldn',
+  'shouldn',
+  'mustn',
+  'ain',
 ] as const
 
 export const STOPWORDS_STANDARD = [
@@ -663,86 +581,82 @@ export function getStopWordsSet(
 
   const customWords = customStopWordsStr
     .toLowerCase()
-    .split(',')
+    .split(/[,\n]/)
     .map((w) => w.trim())
     .filter((w) => w.length > 0)
 
   return new Set([...presetWords, ...customWords])
 }
 
-export function extractTopKeywords(
-  texts: string[],
+// Unicode-aware so accented and non-Latin words survive; length > 1 keeps
+// terms like "ai" while dropping single characters
+function tokenize(text: string): string[] {
+  return (
+    text
+      .toLowerCase()
+      // Drop contraction/possessive suffixes ("we'll", "don't", "microsoft's",
+      // straight or curly apostrophe) before punctuation stripping turns them
+      // into standalone fragments like "ll", "re", "ve"
+      .replace(/['’]\p{L}*/gu, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 1)
+  )
+}
+
+function generateNgrams(tokens: string[], ngramSize: number): string[] {
+  if (ngramSize === 1) {
+    return tokens
+  }
+
+  const ngrams: string[] = []
+  for (let i = 0; i <= tokens.length - ngramSize; i++) {
+    ngrams.push(tokens.slice(i, i + ngramSize).join(' '))
+  }
+  return ngrams
+}
+
+// c-TF-IDF (as in BERTopic): a term is a good keyword for a cluster when it is
+// frequent within the cluster but rare across the corpus as a whole. Plain
+// per-cluster TF-IDF would zero out exactly the terms that characterize the
+// cluster, since they appear in most of its documents.
+export function extractKeywordsForClusters(
+  clusterTexts: string[][],
   topN: number = 10,
   stopWordsSet: Set<string> = new Set(STOPWORDS_STANDARD),
   ngramSize: number = 1,
-): string[] {
-  // Tokenize and count term frequencies
-  const tokenize = (text: string) =>
-    text
-      .toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 2)
-
-  // Generate n-grams from token array
-  const generateNgrams = (tokens: string[]): string[] => {
-    if (ngramSize === 1) {
-      return tokens
+): string[][] {
+  // Term frequency per cluster (exclude n-grams containing any stop word)
+  const clusterTermFreqs = clusterTexts.map((texts) => {
+    const freq = new Map<string, number>()
+    for (const text of texts) {
+      for (const ngram of generateNgrams(tokenize(text), ngramSize)) {
+        if (ngram.split(' ').some((w) => stopWordsSet.has(w))) continue
+        freq.set(ngram, (freq.get(ngram) || 0) + 1)
+      }
     }
+    return freq
+  })
 
-    const ngrams: string[] = []
-    for (let i = 0; i <= tokens.length - ngramSize; i++) {
-      const ngram = tokens.slice(i, i + ngramSize).join(' ')
-      ngrams.push(ngram)
-    }
-    return ngrams
-  }
-
-  // Filter function for n-grams - exclude if ANY word is a stop word
-  const shouldIncludeNgram = (ngram: string): boolean => {
-    const words = ngram.split(' ')
-    return !words.some((w) => stopWordsSet.has(w))
-  }
-
-  // Term frequency in cluster
-  const termFreq = new Map<string, number>()
-  // Document frequency (how many docs contain term)
-  const docFreq = new Map<string, number>()
-
-  for (const text of texts) {
-    const tokens = tokenize(text)
-    const ngrams = generateNgrams(tokens).filter(shouldIncludeNgram)
-    const uniqueNgrams = new Set(ngrams)
-
-    for (const ngram of ngrams) {
-      termFreq.set(ngram, (termFreq.get(ngram) || 0) + 1)
-    }
-
-    for (const ngram of uniqueNgrams) {
-      docFreq.set(ngram, (docFreq.get(ngram) || 0) + 1)
+  // Total frequency of each term across all clusters
+  const corpusFreq = new Map<string, number>()
+  let totalTerms = 0
+  for (const freqs of clusterTermFreqs) {
+    for (const [term, tf] of freqs) {
+      corpusFreq.set(term, (corpusFreq.get(term) || 0) + tf)
+      totalTerms += tf
     }
   }
+  const avgTermsPerCluster = totalTerms / (clusterTermFreqs.length || 1)
 
-  // Calculate TF-IDF scores
-  const tfidf = new Map<string, number>()
-  const numDocs = texts.length
-
-  for (const [term, tf] of termFreq) {
-    const df = docFreq.get(term) || 1
-    const idf = Math.log(numDocs / df)
-    tfidf.set(term, tf * idf)
-  }
-
-  // Sort by TF-IDF score and return top N
-  const sorted = Array.from(tfidf.entries()).sort((a, b) => b[1] - a[1])
-
-  return sorted.slice(0, topN).map(([term]) => term)
-}
-
-export function isModelReady(): boolean {
-  return embeddingPipeline !== null
-}
-
-export function getCurrentModel(): ModelName | null {
-  return currentModel
+  // score = tf(term, cluster) * log(1 + avgTermsPerCluster / corpusFreq(term))
+  return clusterTermFreqs.map((freqs) => {
+    const scored: Array<[string, number]> = []
+    for (const [term, tf] of freqs) {
+      const idf = Math.log(1 + avgTermsPerCluster / (corpusFreq.get(term) || 1))
+      scored.push([term, tf * idf])
+    }
+    scored.sort((a, b) => b[1] - a[1])
+    return scored.slice(0, topN).map(([term]) => term)
+  })
 }

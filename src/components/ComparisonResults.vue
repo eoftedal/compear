@@ -69,7 +69,9 @@ async function performSemanticSearch() {
 
   try {
     // Generate embedding for the search query
-    const queryEmbedding = await generateEmbedding(query)
+    // Same task as the corpus: a retrieval-query prefix would put the query in a
+    // different region than the stored row vectors
+    const queryEmbedding = await generateEmbedding(query, store.selectedModel, 'similarity')
 
     // Calculate similarity for all rows
     const results: SemanticSearchResult[] = []
@@ -334,7 +336,9 @@ function isRowExpanded(index: number): boolean {
                 type="text"
                 placeholder="Search by meaning (press Enter)..."
                 class="semantic-search-input"
-                :disabled="isSemanticSearching || !store.isModelReady || store.embeddings.length === 0"
+                :disabled="
+                  isSemanticSearching || !store.isModelReady || store.embeddings.length === 0
+                "
                 @keydown.enter="performSemanticSearch"
               />
               <button
@@ -365,7 +369,10 @@ function isRowExpanded(index: number): boolean {
           <p>Run comparison first to enable semantic search.</p>
         </div>
 
-        <div v-else-if="semanticSearchResults.length === 0 && !isSemanticSearching" class="semantic-hint">
+        <div
+          v-else-if="semanticSearchResults.length === 0 && !isSemanticSearching"
+          class="semantic-hint"
+        >
           <p>Enter a query and press Enter to find similar rows.</p>
         </div>
 
@@ -398,13 +405,13 @@ function isRowExpanded(index: number): boolean {
                   <td :colspan="store.displayColumns.length + 2">
                     <div class="details-container">
                       <div class="similar-talks-controls" @click.stop>
-                        <button
-                          class="find-similar-btn"
-                          @click="findSimilarTalks(result.rowIndex)"
-                        >
+                        <button class="find-similar-btn" @click="findSimilarTalks(result.rowIndex)">
                           Find similar talks
                         </button>
-                        <label v-if="hasSimilarTalks(result.rowIndex)" class="similar-limit-control">
+                        <label
+                          v-if="hasSimilarTalks(result.rowIndex)"
+                          class="similar-limit-control"
+                        >
                           Show top
                           <input
                             v-model.number="similarTalksLimit"
@@ -417,7 +424,11 @@ function isRowExpanded(index: number): boolean {
                         </label>
                       </div>
 
-                      <div v-if="hasSimilarTalks(result.rowIndex)" class="similar-talks-results" @click.stop>
+                      <div
+                        v-if="hasSimilarTalks(result.rowIndex)"
+                        class="similar-talks-results"
+                        @click.stop
+                      >
                         <table class="details-table similar-results-table">
                           <thead>
                             <tr>
@@ -426,11 +437,18 @@ function isRowExpanded(index: number): boolean {
                             </tr>
                           </thead>
                           <tbody>
-                            <tr v-for="similar in getSimilarTalks(result.rowIndex)" :key="similar.rowIndex">
+                            <tr
+                              v-for="similar in getSimilarTalks(result.rowIndex)"
+                              :key="similar.rowIndex"
+                            >
                               <td :class="['score-cell', getScoreClass(similar.score)]">
                                 {{ formatScore(similar.score) }}
                               </td>
-                              <td v-for="col in store.displayColumns" :key="col" class="field-value">
+                              <td
+                                v-for="col in store.displayColumns"
+                                :key="col"
+                                class="field-value"
+                              >
                                 {{ store.csvRows[similar.rowIndex]?.[col] || '-' }}
                               </td>
                             </tr>

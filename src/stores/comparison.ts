@@ -6,14 +6,17 @@ import { parseXlsx } from '@/utils/xlsxParser'
 import {
   initializeModel,
   generateEmbeddings,
+  getCurrentModel,
   AVAILABLE_MODELS,
+  MODEL_LABELS,
+  DEFAULT_MODEL,
   type ModelName,
 } from '@/utils/embeddings'
 import { calculatePairwiseSimilarities, type SimilarityPair } from '@/utils/similarity'
 
 export const useComparisonStore = defineStore('comparison', () => {
   // Model state
-  const selectedModel = ref<ModelName>('Xenova/bge-small-en-v1.5')
+  const selectedModel = ref<ModelName>(DEFAULT_MODEL)
   const isModelLoading = ref(false)
   const isModelReady = ref(false)
   const modelError = ref<string | null>(null)
@@ -50,7 +53,9 @@ export const useComparisonStore = defineStore('comparison', () => {
 
   // Initialize model immediately
   async function loadModel() {
-    if (isModelReady.value || isModelLoading.value) {
+    // The embedding model is shared with topic modeling, so a ready flag on its own
+    // isn't enough — the other view may have swapped a different model in since
+    if (isModelLoading.value || (isModelReady.value && getCurrentModel() === selectedModel.value)) {
       return
     }
 
@@ -148,9 +153,14 @@ export const useComparisonStore = defineStore('comparison', () => {
       })
 
       // Generate embeddings with progress tracking (0-70%)
-      embeddings.value = await generateEmbeddings(texts, (current, total) => {
-        comparisonProgress.value = Math.round((current / total) * 70)
-      })
+      embeddings.value = await generateEmbeddings(
+        texts,
+        selectedModel.value,
+        'similarity',
+        (current, total) => {
+          comparisonProgress.value = Math.round((current / total) * 70)
+        },
+      )
 
       // Calculate pairwise similarities (70-100%)
       comparisonPhase.value = 'similarity'
@@ -207,6 +217,7 @@ export const useComparisonStore = defineStore('comparison', () => {
 
     // Constants
     AVAILABLE_MODELS,
+    MODEL_LABELS,
 
     // Computed
     hasData,

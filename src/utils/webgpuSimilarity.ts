@@ -1,4 +1,5 @@
 import type { SimilarityPair } from './similarity'
+import { mulberry32, kMeansPlusPlusInit } from './random'
 
 let gpuDevice: GPUDevice | null = null
 let isWebGPUAvailable = false
@@ -398,16 +399,11 @@ export async function kMeansClusteringGPU(
     return []
   }
 
-  // Initialize centroids randomly (on CPU)
-  const centroids: number[][] = []
-  const usedIndices = new Set<number>()
-  while (centroids.length < k) {
-    const idx = Math.floor(Math.random() * numPoints)
-    if (!usedIndices.has(idx) && embeddings[idx]) {
-      centroids.push([...embeddings[idx]!])
-      usedIndices.add(idx)
-    }
-  }
+  // More centroids than points would make initialization impossible
+  k = Math.max(1, Math.min(k, numPoints))
+
+  // Seeded k-means++ initialization (on CPU): reproducible and spread across the data
+  const centroids = kMeansPlusPlusInit(embeddings, k, mulberry32(numPoints))
 
   // Flatten data
   const flatPoints = new Float32Array(numPoints * vectorDim)

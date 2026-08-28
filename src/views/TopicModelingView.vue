@@ -29,11 +29,12 @@
         :disabled="store.isModelLoading || store.isAnalyzing"
       >
         <option v-for="model in store.AVAILABLE_MODELS" :key="model" :value="model">
-          {{ model }}
+          {{ store.MODEL_LABELS[model] }}
         </option>
       </select>
       <p class="model-info">
-        Smaller models (MiniLM-L6) are faster, larger models (MiniLM-L12, BGE) may be more accurate
+        Smaller models (MiniLM-L6, BGE) load in seconds; EmbeddingGemma is more accurate and
+        multilingual, but downloads ~310 MB the first time
       </p>
     </div>
 
@@ -98,9 +99,9 @@
       <div class="setting-row">
         <label for="stopwords-preset">Stop Words Preset:</label>
         <select id="stopwords-preset" v-model="store.stopWordsPreset" :disabled="store.isAnalyzing">
-          <option value="minimal">Minimal (~40 words)</option>
-          <option value="standard">Standard (~100 words)</option>
-          <option value="extensive">Extensive (~170 words)</option>
+          <option value="minimal">Minimal (~65 words)</option>
+          <option value="standard">Standard (~125 words)</option>
+          <option value="extensive">Extensive (~225 words)</option>
         </select>
         <span class="setting-hint">Common words to exclude from keywords</span>
       </div>

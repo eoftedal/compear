@@ -75,7 +75,7 @@ function downloadCSV() {
             class="model-select"
           >
             <option v-for="model in store.AVAILABLE_MODELS" :key="model" :value="model">
-              {{ model.replace('Xenova/', '') }}
+              {{ store.MODEL_LABELS[model] }}
             </option>
           </select>
         </label>

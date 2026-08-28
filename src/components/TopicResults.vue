@@ -20,7 +20,7 @@
             <span class="doc-count">{{ topic.documentIndices.length }} docs</span>
           </div>
 
-          <div v-if="topic.coherence" class="coherence-score">
+          <div v-if="topic.coherence != null" class="coherence-score">
             <span class="label">Coherence:</span>
             <div class="score-bar">
               <div class="score-fill" :style="{ width: `${topic.coherence * 100}%` }"></div>
@@ -113,6 +113,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import Papa from 'papaparse'
 import { useTopicModelingStore, type Topic } from '@/stores/topicModeling'
 
 const store = useTopicModelingStore()
@@ -153,6 +154,16 @@ function loadMoreDocuments() {
   documentsToShow.value += 10
 }
 
+function downloadFile(content: string, mimeType: string, filename: string) {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 function exportTopicsJson() {
   const data = {
     model: store.selectedModel,
@@ -167,64 +178,41 @@ function exportTopicsJson() {
     })),
   }
 
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `topics-${Date.now()}.json`
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadFile(JSON.stringify(data, null, 2), 'application/json', `topics-${Date.now()}.json`)
 }
 
 function exportTopicsCsv() {
-  const rows = [['Topic ID', 'Topic Label', 'Document Count', 'Coherence', 'Keywords'].join(',')]
+  const csv = Papa.unparse({
+    fields: ['Topic ID', 'Topic Label', 'Document Count', 'Coherence', 'Keywords'],
+    data: store.topics.map((topic: Topic) => [
+      topic.id,
+      topic.label,
+      topic.documentIndices.length,
+      topic.coherence?.toFixed(3) || '',
+      topic.keywords.join(', '),
+    ]),
+  })
 
-  for (const topic of store.topics) {
-    rows.push(
-      [
-        topic.id,
-        `"${topic.label}"`,
-        topic.documentIndices.length,
-        topic.coherence?.toFixed(3) || '',
-        `"${topic.keywords.join(', ')}"`,
-      ].join(','),
-    )
-  }
-
-  const csv = rows.join('\n')
-  const blob = new Blob([csv], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `topics-${Date.now()}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadFile(csv, 'text/csv', `topics-${Date.now()}.csv`)
 }
 
 function exportDocumentAssignments() {
-  const rows = [['Document Index', 'Topic ID', 'Topic Label', ...store.displayColumns].join(',')]
+  const csv = Papa.unparse({
+    fields: ['Document Index', 'Topic ID', 'Topic Label', ...store.displayColumns],
+    data: store.topics.flatMap((topic: Topic) =>
+      topic.documentIndices.map((docIdx: number) => {
+        const doc = store.csvRows[docIdx]
+        return [
+          docIdx,
+          topic.id,
+          topic.label,
+          ...store.displayColumns.map((col: string) => doc?.[col] || ''),
+        ]
+      }),
+    ),
+  })
 
-  for (const topic of store.topics) {
-    for (const docIdx of topic.documentIndices) {
-      const doc = store.csvRows[docIdx]
-      const row = [
-        docIdx,
-        topic.id,
-        `"${topic.label}"`,
-        ...store.displayColumns.map((col: string) => `"${doc?.[col] || ''}"`),
-      ]
-      rows.push(row.join(','))
-    }
-  }
-
-  const csv = rows.join('\n')
-  const blob = new Blob([csv], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `document-assignments-${Date.now()}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadFile(csv, 'text/csv', `document-assignments-${Date.now()}.csv`)
 }
 </script>
 

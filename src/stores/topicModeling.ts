@@ -1,14 +1,21 @@
 import { defineStore } from 'pinia'
-import { ref, computed, watch } from 'vue'
+import { ref, shallowRef, computed, watch } from 'vue'
 import type { CsvRow } from '@/utils/csvParser'
 import { parseCSV } from '@/utils/csvParser'
 import { parseXlsx } from '@/utils/xlsxParser'
 import {
   initializeModel,
   generateEmbeddings,
+  getCurrentModel,
   AVAILABLE_MODELS,
-  getStopWordsSet,
+  MODEL_LABELS,
+  DEFAULT_MODEL,
   type ModelName,
+} from '@/utils/embeddings'
+import {
+  performClustering,
+  extractKeywordsForClusters,
+  getStopWordsSet,
   type ClusteringMethod,
 } from '@/utils/topicModeling'
 
@@ -23,7 +30,7 @@ export interface Topic {
 
 export const useTopicModelingStore = defineStore('topicModeling', () => {
   // Model state
-  const selectedModel = ref<ModelName>('Xenova/bge-small-en-v1.5')
+  const selectedModel = ref<ModelName>(DEFAULT_MODEL)
   const isModelLoading = ref(false)
   const isModelReady = ref(false)
   const modelError = ref<string | null>(null)
@@ -47,7 +54,9 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
   const customStopWords = ref(localStorage.getItem('compear_custom_stopwords') || '')
 
   // Results
-  const embeddings = ref<number[][]>([])
+  // shallowRef: deep reactivity would wrap every vector in a proxy, making the
+  // O(N²·d) clustering loops run through proxy traps
+  const embeddings = shallowRef<number[][]>([])
   const topics = ref<Topic[]>([])
   const isAnalyzing = ref(false)
   const analysisProgress = ref(0)
@@ -78,7 +87,9 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
 
   // Initialize model immediately
   async function loadModel() {
-    if (isModelReady.value || isModelLoading.value) {
+    // The embedding model is shared with comparison, so a ready flag on its own
+    // isn't enough — the other view may have swapped a different model in since
+    if (isModelLoading.value || (isModelReady.value && getCurrentModel() === selectedModel.value)) {
       return
     }
 
@@ -104,6 +115,7 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
     // Clear embeddings and results when model changes
     embeddings.value = []
     topics.value = []
+    selectedTopicId.value = null
 
     await loadModel()
   }
@@ -143,7 +155,19 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
 
   // Set analysis columns
   function setAnalysisColumns(columns: string[]) {
+    const changed =
+      columns.length !== analysisColumns.value.length ||
+      columns.some((col, i) => col !== analysisColumns.value[i])
+
     analysisColumns.value = columns
+
+    // Embeddings are derived from these columns, so cached ones are now stale
+    if (changed) {
+      embeddings.value = []
+      topics.value = []
+      selectedTopicId.value = null
+    }
+
     // Default display columns to analysis columns
     if (displayColumns.value.length === 0) {
       displayColumns.value = [...columns]
@@ -178,6 +202,7 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
         embeddings.value = await generateEmbeddings(
           texts,
           selectedModel.value,
+          'clustering',
           (current: number, total: number) => {
             analysisProgress.value = Math.round((current / total) * 60)
           },
@@ -186,7 +211,6 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
 
       // Perform clustering (60-90%)
       analysisPhase.value = 'clustering'
-      const { performClustering } = await import('@/utils/topicModeling')
       const clusters = await performClustering(
         embeddings.value,
         numberOfTopics.value,
@@ -198,29 +222,26 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
 
       // Extract keywords (90-100%)
       analysisPhase.value = 'keywords'
-      const { extractTopKeywords } = await import('@/utils/topicModeling')
-      interface ClusterResult {
-        centroid: number[]
-        documentIndices: number[]
-        coherence?: number
-      }
-      topics.value = (clusters as ClusterResult[]).map((cluster, idx: number) => {
-        const clusterTexts = cluster.documentIndices
-          .map((i: number) => {
-            const row = csvRows.value[i]
-            return analysisColumns.value.map((col) => row?.[col] || '').join(' ')
-          })
-          .filter((text): text is string => text !== undefined)
-        const keywords = extractTopKeywords(
-          clusterTexts,
-          topKeywords.value,
-          mergedStopWords.value,
-          ngramSize.value,
-        )
+      const clusterTexts = clusters.map((cluster) =>
+        cluster.documentIndices.map((i) => {
+          const row = csvRows.value[i]
+          return analysisColumns.value.map((col) => row?.[col] || '').join(' ')
+        }),
+      )
+      const keywordsPerCluster = extractKeywordsForClusters(
+        clusterTexts,
+        topKeywords.value,
+        mergedStopWords.value,
+        ngramSize.value,
+      )
 
+      topics.value = clusters.map((cluster, idx) => {
+        const keywords = keywordsPerCluster[idx] ?? []
         return {
           id: idx,
-          label: `Topic ${idx + 1}`,
+          label: keywords.length
+            ? `Topic ${idx + 1}: ${keywords.slice(0, 3).join(', ')}`
+            : `Topic ${idx + 1}`,
           keywords,
           documentIndices: cluster.documentIndices,
           centroid: cluster.centroid,
@@ -286,6 +307,7 @@ export const useTopicModelingStore = defineStore('topicModeling', () => {
 
     // Constants
     AVAILABLE_MODELS,
+    MODEL_LABELS,
 
     // Computed
     hasData,
