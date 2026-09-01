@@ -53,6 +53,92 @@ function hasSimilarTalks(rowIndex: number): boolean {
   return similarTalksMap.value.has(rowIndex)
 }
 
+// "Most similar" browser: every row, paginated, expanding to its closest neighbours.
+// Shares similarTalksMap with the pair-table feature above, so a row already expanded
+// there costs nothing to open here.
+const MOST_SIMILAR_COUNT = 10
+const mostSimilarPage = ref(1)
+const mostSimilarPageSize = ref(25)
+const expandedMostSimilarRows = ref<Set<number>>(new Set())
+const mostSimilarSearchInput = ref('')
+const mostSimilarSearchText = ref('')
+let mostSimilarDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+// Debounced like the comparison-results filter, so typing doesn't re-page on every key
+watch(mostSimilarSearchInput, (newValue) => {
+  if (mostSimilarDebounceTimer) {
+    clearTimeout(mostSimilarDebounceTimer)
+  }
+  mostSimilarDebounceTimer = setTimeout(() => {
+    mostSimilarSearchText.value = newValue
+    // A narrower list can be shorter than the page the user is currently on
+    mostSimilarPage.value = 1
+  }, 300)
+})
+
+// Carries the row's index in csvRows, since that is what the embeddings are keyed by,
+// and it has to survive filtering — neighbours are looked up by original index
+const mostSimilarRows = computed(() => {
+  const rows = store.csvRows.map((row, rowIndex) => ({ row, rowIndex }))
+  const search = mostSimilarSearchText.value.trim().toLowerCase()
+
+  if (!search) {
+    return rows
+  }
+
+  return rows.filter(({ row }) =>
+    store.displayColumns.some((col) => (row[col] || '').toLowerCase().includes(search)),
+  )
+})
+
+const mostSimilarTotalPages = computed(() =>
+  Math.max(1, Math.ceil(mostSimilarRows.value.length / mostSimilarPageSize.value)),
+)
+
+const pagedRows = computed(() => {
+  const start = (mostSimilarPage.value - 1) * mostSimilarPageSize.value
+  return mostSimilarRows.value.slice(start, start + mostSimilarPageSize.value)
+})
+
+function toggleMostSimilarRow(rowIndex: number) {
+  if (expandedMostSimilarRows.value.has(rowIndex)) {
+    expandedMostSimilarRows.value.delete(rowIndex)
+    return
+  }
+  // Scored on demand: one pass over the embeddings, not the full pair list
+  if (!similarTalksMap.value.has(rowIndex)) {
+    findSimilarTalks(rowIndex)
+  }
+  expandedMostSimilarRows.value.add(rowIndex)
+}
+
+function isMostSimilarExpanded(rowIndex: number): boolean {
+  return expandedMostSimilarRows.value.has(rowIndex)
+}
+
+function getMostSimilar(rowIndex: number): SemanticSearchResult[] {
+  return (similarTalksMap.value.get(rowIndex) ?? []).slice(0, MOST_SIMILAR_COUNT)
+}
+
+function goToPage(page: number) {
+  mostSimilarPage.value = Math.min(Math.max(1, page), mostSimilarTotalPages.value)
+}
+
+watch(mostSimilarPageSize, () => {
+  mostSimilarPage.value = 1
+})
+
+// A fresh comparison invalidates the cached neighbour lists — they were scored against
+// the previous embeddings, which a model or column change will have replaced
+watch(
+  () => store.similarityResults,
+  () => {
+    mostSimilarPage.value = 1
+    expandedMostSimilarRows.value = new Set()
+    similarTalksMap.value = new Map()
+  },
+)
+
 async function performSemanticSearch() {
   const query = semanticSearchInput.value.trim()
 
@@ -232,7 +318,10 @@ function isRowExpanded(index: number): boolean {
 
     <div v-else class="results-container">
       <div class="results-header">
-        <h2>Comparison Results</h2>
+        <div class="section-heading">
+          <h2>Comparison Results</h2>
+          <p class="section-description">Every pair of rows, ranked by similarity</p>
+        </div>
         <div class="controls">
           <label class="search-control">
             <input
@@ -325,10 +414,133 @@ function isRowExpanded(index: number): boolean {
         </table>
       </div>
 
+      <!-- Most Similar Section -->
+      <div class="most-similar-section">
+        <div class="most-similar-header">
+          <div class="section-heading">
+            <h2>Most Similar</h2>
+            <p class="section-description">
+              Click a row to see the {{ MOST_SIMILAR_COUNT }} most semantically similar rows
+            </p>
+          </div>
+          <div class="most-similar-controls">
+            <label class="search-control most-similar-search">
+              <input
+                v-model="mostSimilarSearchInput"
+                type="text"
+                placeholder="Filter by text..."
+                class="search-input"
+              />
+            </label>
+            <label class="row-limit-control">
+              Rows per page
+              <select v-model.number="mostSimilarPageSize" class="page-size-select">
+                <option :value="25">25</option>
+                <option :value="50">50</option>
+                <option :value="100">100</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div v-if="mostSimilarRows.length === 0" class="semantic-hint">
+          <p>No rows match that filter.</p>
+        </div>
+
+        <div v-else class="table-wrapper">
+          <table class="results-table most-similar-table">
+            <thead>
+              <tr>
+                <th class="row-number">#</th>
+                <th v-for="col in store.displayColumns" :key="col">{{ col }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="entry in pagedRows" :key="entry.rowIndex">
+                <tr
+                  :class="['result-row', { expanded: isMostSimilarExpanded(entry.rowIndex) }]"
+                  @click="toggleMostSimilarRow(entry.rowIndex)"
+                >
+                  <td class="row-number">{{ entry.rowIndex + 1 }}</td>
+                  <td v-for="col in store.displayColumns" :key="col" class="data-cell">
+                    {{ entry.row?.[col] || '-' }}
+                  </td>
+                </tr>
+
+                <tr v-if="isMostSimilarExpanded(entry.rowIndex)" class="expanded-details">
+                  <td :colspan="store.displayColumns.length + 1">
+                    <div class="details-container">
+                      <h4>{{ MOST_SIMILAR_COUNT }} most similar rows</h4>
+                      <table class="details-table similar-results-table">
+                        <thead>
+                          <tr>
+                            <th class="score-header">Similarity</th>
+                            <th v-for="col in store.displayColumns" :key="col">{{ col }}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr
+                            v-for="similar in getMostSimilar(entry.rowIndex)"
+                            :key="similar.rowIndex"
+                          >
+                            <td :class="['score-cell', getScoreClass(similar.score)]">
+                              {{ formatScore(similar.score) }}
+                            </td>
+                            <td v-for="col in store.displayColumns" :key="col" class="field-value">
+                              {{ store.csvRows[similar.rowIndex]?.[col] || '-' }}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pagination">
+          <button class="page-btn" :disabled="mostSimilarPage === 1" @click="goToPage(1)">
+            « First
+          </button>
+          <button
+            class="page-btn"
+            :disabled="mostSimilarPage === 1"
+            @click="goToPage(mostSimilarPage - 1)"
+          >
+            ‹ Prev
+          </button>
+          <span class="page-indicator">
+            Page {{ mostSimilarPage }} of {{ mostSimilarTotalPages }} ({{
+              mostSimilarRows.length
+            }}
+            of {{ store.csvRows.length }} rows)
+          </span>
+          <button
+            class="page-btn"
+            :disabled="mostSimilarPage >= mostSimilarTotalPages"
+            @click="goToPage(mostSimilarPage + 1)"
+          >
+            Next ›
+          </button>
+          <button
+            class="page-btn"
+            :disabled="mostSimilarPage >= mostSimilarTotalPages"
+            @click="goToPage(mostSimilarTotalPages)"
+          >
+            Last »
+          </button>
+        </div>
+      </div>
+
       <!-- Semantic Search Section -->
       <div class="semantic-search-section">
         <div class="semantic-header">
-          <h2>Semantic Search</h2>
+          <div class="section-heading">
+            <h2>Semantic Search</h2>
+            <p class="section-description">Find rows by meaning, not keywords</p>
+          </div>
           <div class="semantic-controls">
             <div class="semantic-input-wrapper">
               <input
@@ -551,6 +763,18 @@ function isRowExpanded(index: number): boolean {
   margin: 0;
 }
 
+.section-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.section-description {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #666;
+}
+
 .controls {
   display: flex;
   gap: 1rem;
@@ -579,6 +803,86 @@ function isRowExpanded(index: number): boolean {
 
 .search-input::placeholder {
   color: #999;
+}
+
+/* Most Similar Section */
+.most-similar-section {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 2px solid #e0e0e0;
+}
+
+.most-similar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.most-similar-header h2 {
+  font-size: 1.5rem;
+  margin: 0;
+  color: #00695c;
+}
+
+.most-similar-controls {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.most-similar-search {
+  min-width: 240px;
+}
+
+.most-similar-search .search-input:focus {
+  border-color: #00695c;
+}
+
+.page-size-select {
+  padding: 0.4rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  background: white;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+.page-btn {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.9rem;
+  background: #00695c;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.page-btn:hover:not(:disabled) {
+  background: #004d40;
+}
+
+.page-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.page-indicator {
+  font-size: 0.9rem;
+  color: #555;
+  padding: 0 0.75rem;
 }
 
 /* Semantic Search Section */
