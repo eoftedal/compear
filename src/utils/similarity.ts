@@ -28,12 +28,28 @@ export interface SimilarityPair {
   score: number
 }
 
+// Let the browser paint between chunks of work. Reporting progress is not enough on
+// its own — the pair scan is one long synchronous run, so without yielding the bar
+// cannot repaint and the tab locks up until the whole phase is over.
+export const yieldToUI = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+// Pairs per yield. Small enough that the bar moves steadily, large enough that the
+// ~4ms timer clamp stays a rounding error against the work itself.
+export const PAIRS_PER_CHUNK = 20000
+
+/**
+ * The scan is reported across the first 90% of the phase and the final sort owns the
+ * last 10%. Sorting hundreds of thousands of pairs is a single call that can't be
+ * chunked, so it gets its own slice rather than landing after a displayed 100%.
+ */
+export const SCAN_SHARE = 0.9
+
 // CPU fallback implementation
-function calculatePairwiseSimilaritiesCPU(
+async function calculatePairwiseSimilaritiesCPU(
   embeddings: number[][],
   excludeSelfComparison = true,
   onProgress?: (current: number, total: number) => void,
-): SimilarityPair[] {
+): Promise<SimilarityPair[]> {
   const results: SimilarityPair[] = []
   const n = embeddings.length
   const totalPairs = (n * (n - 1)) / 2
@@ -54,18 +70,20 @@ function calculatePairwiseSimilaritiesCPU(
       })
 
       pairsProcessed++
-      if (onProgress && pairsProcessed % 100 === 0) {
-        onProgress(pairsProcessed, totalPairs)
+      if (pairsProcessed % PAIRS_PER_CHUNK === 0) {
+        onProgress?.(Math.round(pairsProcessed * SCAN_SHARE), totalPairs)
+        await yieldToUI()
       }
     }
   }
 
-  if (onProgress) {
-    onProgress(totalPairs, totalPairs)
-  }
+  onProgress?.(Math.round(totalPairs * SCAN_SHARE), totalPairs)
+  await yieldToUI()
 
   // Sort by score in descending order
-  return results.sort((a, b) => b.score - a.score)
+  const sorted = results.sort((a, b) => b.score - a.score)
+  onProgress?.(totalPairs, totalPairs)
+  return sorted
 }
 
 export async function calculatePairwiseSimilarities(

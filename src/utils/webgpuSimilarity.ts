@@ -1,4 +1,4 @@
-import type { SimilarityPair } from './similarity'
+import { yieldToUI, PAIRS_PER_CHUNK, SCAN_SHARE, type SimilarityPair } from './similarity'
 import { mulberry32, kMeansPlusPlusInit } from './random'
 
 let gpuDevice: GPUDevice | null = null
@@ -189,23 +189,29 @@ export async function calculateSimilaritiesOnGPU(
 
   gpuDevice.queue.submit([commandEncoder.finish()])
 
-  // Report progress during GPU execution
-  if (onProgress) {
-    onProgress(totalPairs, totalPairs)
-  }
+  onProgress?.(0, totalPairs)
 
-  // Read results
+  // Read results. The shader itself finishes in milliseconds; the wall-clock cost of
+  // this phase is turning the flat buffer into pair objects and sorting them, so
+  // progress is reported across that work rather than announced up front.
   await stagingBuffer.mapAsync(GPUMapMode.READ)
   const resultData = new Float32Array(stagingBuffer.getMappedRange())
 
   const results: SimilarityPair[] = []
-  for (let i = 0; i < totalPairs; i++) {
-    const offset = i * 3
-    results.push({
-      rowIndexA: Math.round(resultData[offset]!),
-      rowIndexB: Math.round(resultData[offset + 1]!),
-      score: resultData[offset + 2]!,
-    })
+  for (let start = 0; start < totalPairs; start += PAIRS_PER_CHUNK) {
+    const end = Math.min(start + PAIRS_PER_CHUNK, totalPairs)
+
+    for (let i = start; i < end; i++) {
+      const offset = i * 3
+      results.push({
+        rowIndexA: Math.round(resultData[offset]!),
+        rowIndexB: Math.round(resultData[offset + 1]!),
+        score: resultData[offset + 2]!,
+      })
+    }
+
+    onProgress?.(Math.round(end * SCAN_SHARE), totalPairs)
+    await yieldToUI()
   }
 
   stagingBuffer.unmap()
@@ -217,7 +223,9 @@ export async function calculateSimilaritiesOnGPU(
   stagingBuffer.destroy()
 
   // Sort by score descending
-  return results.sort((a, b) => b.score - a.score)
+  const sorted = results.sort((a, b) => b.score - a.score)
+  onProgress?.(totalPairs, totalPairs)
+  return sorted
 }
 
 export function isWebGPUAvailableForSimilarity(): boolean {

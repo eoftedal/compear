@@ -40,9 +40,11 @@ async function detectWebGPU() {
   }
 }
 
+// Order drives the <select>; the recommended model leads
 export const AVAILABLE_MODELS = [
-  'Xenova/bge-small-en-v1.5',
   'onnx-community/embeddinggemma-300m-ONNX',
+  'Xenova/bge-small-en-v1.5',
+  'onnx-community/harrier-oss-v1-270m-ONNX',
   'onnx-community/Qwen3-Embedding-0.6B-ONNX',
   'Xenova/all-MiniLM-L6-v2',
   'Xenova/all-MiniLM-L12-v2',
@@ -57,8 +59,9 @@ export const DEFAULT_MODEL: ModelName = 'Xenova/bge-small-en-v1.5'
 // models whose dtype is pinned below, since otherwise the download depends on
 // the dtype transformers.js picks for the device.
 export const MODEL_LABELS: Record<ModelName, string> = {
-  'Xenova/bge-small-en-v1.5': 'bge-small-en-v1.5 — 384d, English',
   'onnx-community/embeddinggemma-300m-ONNX': 'EmbeddingGemma-300m — 768d, multilingual (~310 MB)',
+  'Xenova/bge-small-en-v1.5': 'bge-small-en-v1.5 — 384d, English',
+  'onnx-community/harrier-oss-v1-270m-ONNX': 'Harrier-270m — 640d, multilingual (~345 MB)',
   'onnx-community/Qwen3-Embedding-0.6B-ONNX': 'Qwen3-Embedding-0.6B — 1024d, multilingual',
   'Xenova/all-MiniLM-L6-v2': 'all-MiniLM-L6-v2 — 384d, English',
   'Xenova/all-MiniLM-L12-v2': 'all-MiniLM-L12-v2 — 384d, English',
@@ -140,11 +143,19 @@ const MODEL_CONFIG: Record<ModelName, ModelConfig> = {
     },
   },
 
-  // Deliberately absent: onnx-community/harrier-oss-v1-270m-ONNX. It scores better than
-  // EmbeddingGemma for its size, but both its quantized exports fail to load on the
-  // onnxruntime bundled with transformers.js 3.x ("Unrecognized attribute: bits for
-  // operator GatherBlockQuantized"), leaving only a 1.1 GB fp32 download. Worth
-  // revisiting on a v4 upgrade.
+  // Harrier is decoder-only with last-token pooling inside the graph, and its card is
+  // explicit that omitting the instruction costs accuracy. fp32 weights are 1.1 GB, so
+  // q8 again. Its quantized exports need onnxruntime >= the one transformers.js 4.x
+  // bundles; on 3.x they failed with "Unrecognized attribute: bits for operator
+  // GatherBlockQuantized".
+  'onnx-community/harrier-oss-v1-270m-ONNX': {
+    runtime: 'encoder',
+    dtype: 'q8',
+    prefixes: {
+      similarity: 'Instruct: Retrieve semantically similar text\nQuery: ',
+      clustering: 'Instruct: Identify the topic or theme of the given text\nQuery: ',
+    },
+  },
 }
 
 interface LoadedModel {
@@ -271,6 +282,21 @@ export async function initializeModel(modelName: ModelName = DEFAULT_MODEL): Pro
   return loadingPromise
 }
 
+/**
+ * Cell values routinely span several lines, and the line endings that arrive depend on
+ * which machine exported the file rather than on what the row says. Two rows with the
+ * same text must embed identically whether they came from Excel on Windows or a CSV
+ * written on macOS, so CRLF is folded to LF and the ends are trimmed. Interior newlines
+ * are left alone — those are real structure, and every model handles them well.
+ *
+ * This matters most for Qwen3: it pools the last token, and unnormalized line endings
+ * moved identical text from ~1.0 down to 0.95 against itself. The encoder models are
+ * far less sensitive, but nothing here hurts them.
+ */
+function normalizeForEmbedding(text: string): string {
+  return text.replace(/\r\n?/g, '\n').trim()
+}
+
 const EMBEDDING_BATCH_SIZE = 32
 
 export async function generateEmbeddings(
@@ -296,7 +322,7 @@ export async function generateEmbeddings(
     // back to rows by index
     const batch = texts
       .slice(start, start + EMBEDDING_BATCH_SIZE)
-      .map((text) => prefix + (text || ' '))
+      .map((text) => prefix + (normalizeForEmbedding(text) || ' '))
 
     embeddings.push(...(await model.encode(batch)))
 
